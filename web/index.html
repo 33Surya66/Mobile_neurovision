@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="mobile_neurovision">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>mobile_neurovision</title>
+  <link rel="manifest" href="manifest.json">
+    <!-- TensorFlow.js and Face Landmarks Detection (used for web facial keypoints).
+      Use the combined tf.min.js to ensure `tf` global is registered and backends are available.
+    -->
+  <!-- Prefer MediaPipe Face Mesh for reliable landmarks in the browser -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.5/face_mesh.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.5/camera_utils.js"></script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+    <!-- Container for NeuroVision web camera preview (inserted by JS).
+         This is positioned by Flutter via JS interop so the <video> appears
+         visually inside the Flutter placeholder card (quick CSS overlay approach).
+    -->
+  <div id="neurovision-webcam" style="position:absolute; left:0; top:0; width:0; height:0; display:none; z-index:9999; border-radius:18px; overflow:hidden; pointer-events:none;"></div>
+
+  <script>
+      (function(){
+        // Combined face-detection + overlay positioning script.
+        let _video = null;
+        let _canvas = null;
+        let _ctx = null;
+        let _stream = null;
+        let _detector = null;
+        let _running = false;
+  let _tfModel = null;
+  let _faceMesh = null;
+
+        async function startFaceDetection() {
+          const container = document.getElementById('neurovision-webcam') || document.body;
+          container.style.display = 'block';
+          if (_running) return;
+
+          _video = document.createElement('video');
+          _video.autoplay = true;
+          _video.playsInline = true;
+          _video.style.width = '100%';
+          _video.style.height = '100%';
+          _video.style.objectFit = 'cover';
+          _video.style.display = 'block';
+            let _tfModel = null;
+            let _faceMesh = null;
+
+          _canvas = document.createElement('canvas');
+          _canvas.style.position = 'absolute';
+          _canvas.style.top = '0';
+          _canvas.style.left = '0';
+          _canvas.style.pointerEvents = 'none';
+
+          container.appendChild(_video);
+              // mute to allow autoplay in some browsers
+              _video.muted = true;
+          container.appendChild(_canvas);
+              _video.style.position = 'absolute';
+              _video.style.top = '0';
+              _video.style.left = '0';
+              _video.style.width = '100%';
+              _video.style.height = '100%';
+              _video.style.objectFit = 'cover';
+              _video.style.display = 'block';
+              _video.style.zIndex = '1';
+            try {
+              console.log('neurovision: video loadedmetadata', _video.videoWidth, _video.videoHeight);
+              // initialize canvas CSS size to match container or video size
+              const dpr = window.devicePixelRatio || 1;
+              const logicalW = container.clientWidth || _video.videoWidth || 640;
+              const logicalH = container.clientHeight || _video.videoHeight || 360;
+              _canvas.style.background = 'transparent';
+              _canvas.style.zIndex = '9999';
+              const deviceW = Math.max(1, Math.floor(logicalW * dpr));
+              const deviceH = Math.max(1, Math.floor(logicalH * dpr));
+              _canvas.width = deviceW;
+              _canvas.height = deviceH;
+              _canvas.style.width = logicalW + 'px';
+              _canvas.style.height = logicalH + 'px';
+              _ctx = _canvas.getContext('2d');
+              _ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+              // draw a quick debug dot so users can confirm the canvas is visible
+              try {
+                console.log('neurovision: created video and canvas', logicalW, logicalH, deviceW, deviceH);
+                _ctx.fillStyle = 'rgba(255,0,0,0.9)';
+                _ctx.beginPath();
+                _ctx.arc(logicalW / 2, logicalH / 2, 6, 0, Math.PI * 2);
+                _ctx.fill();
+              } catch (e) {
+                /* ignore draw errors */
+              }
+            } catch (e) {
+              console.warn('neurovision: loadedmetadata handler error', e);
+            }
+
+          try {
+            _stream = await navigator.mediaDevices.getUserMedia({video: {facingMode:'user'}, audio:false});
+            _video.srcObject = _stream;
+            await _video.play();
+
+            _canvas.width = container.clientWidth || _video.videoWidth || 640;
+            _canvas.height = container.clientHeight || _video.videoHeight || 360;
+            _ctx = _canvas.getContext('2d');
+
+            // Try TF model first
+            try {
+              if (globalThis.faceLandmarksDetection) {
+                try {
+                  if (globalThis.tf && globalThis.tf.setBackend) {
+                    await globalThis.tf.setBackend('webgl');
+                    await globalThis.tf.ready();
+                  }
+                } catch (error_) {
+                  console.error('TF backend set/ready failed:', error_);
+                }
+
+                try {
+                  _tfModel = await globalThis.faceLandmarksDetection.load(globalThis.faceLandmarksDetection.SupportedPackages.mediapipeFacemesh);
+                  console.log('TF face-landmarks model loaded');
+                  _running = true;
+                  requestAnimationFrame(tick);
+                  return;
+                } catch (error_) {
+                  console.error('TF model load failed:', error_);
+                  _tfModel = null;
+                }
+              }
+            } catch (err) {
+              console.error('TF init error (outer):', err);
+              _tfModel = null;
+            }
+
+            // Try MediaPipe FaceMesh (reliable landmarks) before Shape Detection
+            if (globalThis.FaceMesh) {
+              try {
+                _faceMesh = new globalThis.FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+                _faceMesh.setOptions({maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.5, minTrackingConfidence:0.5});
+                _faceMesh.onResults((results) => {
+                  // results.multiFaceLandmarks is an array of arrays of normalized landmarks
+                  const dpr = window.devicePixelRatio || 1;
+                  const logicalW = container.clientWidth || _video.videoWidth || 640;
+                  const logicalH = container.clientHeight || _video.videoHeight || 360;
+
+                  // ensure container is positioned so absolute canvas/video align
+                  container.style.position = container.style.position || 'relative';
+
+                  // make sure video sits behind canvas
+                  if (_video) _video.style.zIndex = '1';
+                  if (_canvas) _canvas.style.zIndex = '2';
+
+                  // Set canvas device size for crisp rendering, and CSS size to logical px
+                  const deviceW = Math.max(1, Math.floor(logicalW * dpr));
+                  const deviceH = Math.max(1, Math.floor(logicalH * dpr));
+                  if (_canvas.width !== deviceW) _canvas.width = deviceW;
+                  if (_canvas.height !== deviceH) _canvas.height = deviceH;
+                  _canvas.style.width = logicalW + 'px';
+                  _canvas.style.height = logicalH + 'px';
+
+                  // Use transform to map drawing to logical pixels
+                  _ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                  _ctx.clearRect(0, 0, logicalW, logicalH);
+
+                  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length) {
+
+                    const landmarks = results.multiFaceLandmarks[0];
+                    // debug: log landmark count
+                    if (typeof console !== 'undefined') console.debug('neurovision: landmarks', landmarks.length);
+
+                    // draw mesh connections (simple adjacent connections for visibility)
+                    _ctx.strokeStyle = 'rgba(0,200,150,0.7)';
+                    _ctx.lineWidth = 1.2;
+                    _ctx.beginPath();
+                    for (let i = 0; i < landmarks.length - 1; i++) {
+                      const a = landmarks[i];
+                      const b = landmarks[i + 1];
+                      _ctx.moveTo(a.x * logicalW, a.y * logicalH);
+                      _ctx.lineTo(b.x * logicalW, b.y * logicalH);
+                    }
+                    _ctx.stroke();
+
+                    // draw points
+                    _ctx.fillStyle = 'rgba(0,255,128,0.95)';
+                    for (let i = 0; i < landmarks.length; i++) {
+                      const lm = landmarks[i];
+                      const x = lm.x * logicalW;
+                      const y = lm.y * logicalH;
+                      _ctx.beginPath();
+                      _ctx.arc(x, y, 2, 0, Math.PI * 2);
+                      _ctx.fill();
+                    }
+
+                    // Dispatch flattened numeric array [x0,y0,x1,y1,...] (normalized coords)
+                    try {
+                      const flat = new Array(landmarks.length * 2);
+                      for (let i = 0; i < landmarks.length; i++) {
+                        flat[i * 2] = landmarks[i].x;
+                        flat[i * 2 + 1] = landmarks[i].y;
+                      }
+                      const evt = new CustomEvent('neurovision_landmarks', {detail: flat});
+                      globalThis.dispatchEvent(evt);
+                    } catch (e) {
+                      console.error('landmark dispatch error', e);
+                    }
+                  }
+                });
+                console.log('MediaPipe FaceMesh initialized');
+                _running = true;
+                requestAnimationFrame(tick);
+                return;
+              } catch (error_) {
+                console.error('FaceMesh init failed:', error_);
+                _faceMesh = null;
+              }
+            }
+
+            // Fallback to Shape Detection
+            if ('FaceDetector' in globalThis) {
+              try {
+                _detector = new globalThis.FaceDetector({fastMode:true, maxDetectedFaces:5});
+                _running = true;
+                requestAnimationFrame(tick);
+              } catch (err) {
+                console.log('FaceDetector init error', err);
+                _ctx.font = '18px Arial';
+                _ctx.fillStyle = 'red';
+                _ctx.fillText('FaceDetector init error: ' + err, 10, 30);
+              }
+            } else {
+              _ctx.font = '16px Arial';
+              _ctx.fillStyle = 'orange';
+              _ctx.fillText('Face detection model not available in this browser.', 10, 30);
+            }
+          } catch (e) {
+            console.log('Camera error', e);
+            alert('Could not access camera: ' + e);
+            container.style.display = 'none';
+          }
+        }
+
+        async function tick() {
+          if (!_running) return;
+          try {
+            // If MediaPipe FaceMesh is being used, feed the video frame into it
+            if (_faceMesh) {
+              try {
+                await _faceMesh.send({image: _video});
+              } catch (err) {
+                console.error('FaceMesh send error', err);
+              }
+              requestAnimationFrame(tick);
+              return;
+            }
+
+            _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+            if (_tfModel) {
+              const preds = await _tfModel.estimateFaces({input: _video, returnTensors: false, flipHorizontal: true, predictIrises: true});
+              for (const pred of preds) {
+                const mesh = pred.scaledMesh || pred.mesh || [];
+                _ctx.fillStyle = 'rgba(0,255,128,0.9)';
+                for (const pt of mesh) {
+                  const [x, y] = pt;
+                  _ctx.beginPath();
+                  _ctx.arc(x, y, 1.4, 0, 2 * Math.PI);
+                  _ctx.fill();
+                }
+                if (pred.boundingBox) {
+                  const box = pred.boundingBox;
+                  _ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+                  _ctx.lineWidth = 1;
+                  _ctx.strokeRect(box.topLeft[0], box.topLeft[1], box.bottomRight[0] - box.topLeft[0], box.bottomRight[1] - box.topLeft[1]);
+                }
+              }
+            } else if (_detector != null) {
+              const faces = await _detector.detect(_video);
+              for (const face of faces) {
+                const box = face.boundingBox;
+                _ctx.strokeStyle = 'lime';
+                _ctx.lineWidth = 2;
+                _ctx.strokeRect(box.x, box.y, box.width, box.height);
+              }
+            }
+          } catch (error_) {
+            console.error('Per-frame detection error:', error_);
+          }
+          requestAnimationFrame(tick);
+        }
+
+        function stopFaceDetection() {
+          _running = false;
+          if (_stream) {
+            for (const t of _stream.getTracks()) t.stop();
+            _stream = null;
+          }
+          if (_video && _video.parentNode) _video.remove();
+          if (_canvas && _canvas.parentNode) _canvas.remove();
+          _video = null; _canvas = null; _ctx = null; _detector = null; _tfModel = null;
+        }
+
+        // Overlay positioning helpers exposed on globalThis for Flutter to call
+        function positionOverlay(x, y, w, h) {
+          const c = document.getElementById('neurovision-webcam');
+          if (!c) return;
+          c.style.display = 'block';
+          c.style.position = 'absolute';
+          c.style.left = x + 'px';
+          c.style.top = y + 'px';
+          const logicalW = Math.max(0, w);
+          const logicalH = Math.max(0, h);
+          c.style.width = logicalW + 'px';
+          c.style.height = logicalH + 'px';
+          c.style.borderRadius = '18px';
+          c.style.overflow = 'hidden';
+          c.style.pointerEvents = 'none';
+          const vid = c.querySelector('video');
+          const cvs = c.querySelector('canvas');
+          const dpr = window.devicePixelRatio || 1;
+          if (vid) { vid.style.width = '100%'; vid.style.height = '100%'; vid.style.objectFit = 'cover'; }
+          if (cvs) {
+            // set canvas backing store to device pixels and CSS size to logical px
+            cvs.width = Math.max(1, Math.floor(logicalW * dpr));
+            cvs.height = Math.max(1, Math.floor(logicalH * dpr));
+            cvs.style.width = logicalW + 'px';
+            cvs.style.height = logicalH + 'px';
+            try {
+              const ctx = cvs.getContext('2d');
+              ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            } catch (e) {}
+          }
+        }
+
+        function hideOverlay() {
+          const c = document.getElementById('neurovision-webcam');
+          if (c) c.style.display = 'none';
+        }
+
+        // export to globalThis
+        globalThis.startFaceDetection = startFaceDetection;
+        globalThis.stopFaceDetection = stopFaceDetection;
+        globalThis.positionOverlay = positionOverlay;
+        globalThis.hideOverlay = hideOverlay;
+      })();
+    </script>
+  </body>
+</html>
