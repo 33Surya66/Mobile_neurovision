@@ -167,7 +167,14 @@ def health():
 @app.after_request
 def _add_cors_headers(response):
     # Mirror configured origins when possible
-    response.headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGINS if ALLOWED_ORIGINS else '*'
+    try:
+        if CORS_ORIGINS == '*':
+            origin_header = '*'
+        else:
+            origin_header = ','.join(CORS_ORIGINS)
+    except Exception:
+        origin_header = '*'
+    response.headers['Access-Control-Allow-Origin'] = origin_header
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     return response
