@@ -11,6 +11,7 @@ import '../widgets/eyetracking_overlay.dart';
 import '../widgets/web_camera_view.dart';
 import 'web_camera_screen.dart';
 import '../utils/js_bridge.dart' as js_bridge;
+import 'image_detection_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -235,6 +236,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _overlayTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _positionWebOverlay());
 
       await js_util.promiseToFuture(js_util.callMethod(js_util.globalThis, 'startFaceDetection', []));
+      // Make sure overlay is on top of Flutter canvas
+      try {
+        js_util.callMethod(js_util.globalThis, 'bringOverlayToFront', []);
+      } catch (_) {}
       setState(() {
         _streaming = true;
         _status = 'Web streaming';
@@ -273,6 +278,10 @@ class _HomeScreenState extends State<HomeScreen> {
       final offset = box.localToGlobal(Offset.zero);
       final size = box.size;
       js_util.callMethod(js_util.globalThis, 'positionOverlay', [offset.dx, offset.dy, size.width, size.height]);
+      // keep overlay visually on top
+      try {
+        js_util.callMethod(js_util.globalThis, 'bringOverlayToFront', []);
+      } catch (_) {}
     } catch (e) {
       // ignore positioning errors
     }
@@ -494,11 +503,24 @@ class _HomeScreenState extends State<HomeScreen> {
                   // bottom navigation mimic
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: const [
-                      _BottomNavItem(icon: Icons.monitor_heart, label: 'Monitor', active: true),
-                      _BottomNavItem(icon: Icons.dashboard, label: 'Dashboard'),
-                      _BottomNavItem(icon: Icons.history, label: 'History'),
-                      _BottomNavItem(icon: Icons.settings, label: 'Settings'),
+                    children: [
+                      const _BottomNavItem(icon: Icons.monitor_heart, label: 'Monitor', active: true),
+                      const _BottomNavItem(icon: Icons.dashboard, label: 'Dashboard'),
+                      InkWell(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImageDetectionPage())),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.image, color: Colors.white54),
+                              SizedBox(height: 6),
+                              Text('Image', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const _BottomNavItem(icon: Icons.settings, label: 'Settings'),
                     ],
                   )
                 ],

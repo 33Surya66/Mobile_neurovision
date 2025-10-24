@@ -1,0 +1,8 @@
+flask==2.2.5
+pillow==9.5.0
+# Use a currently available mediapipe wheel
+mediapipe==0.10.21
+numpy==1.26.4
+gunicorn==20.1.0
+pymongo==4.4.0
+flask-cors==4.0.0

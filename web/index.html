@@ -37,6 +37,9 @@
   <!-- Prefer MediaPipe Face Mesh for reliable landmarks in the browser -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.5/face_mesh.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.5/camera_utils.js"></script>
+  <!-- TFJS + face-landmarks-detection fallback (does not require MediaPipe runtime files) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@0.0.7/dist/face-landmarks-detection.min.js"></script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
@@ -58,8 +61,45 @@
   let _tfModel = null;
   let _faceMesh = null;
 
+        // Helper to dynamically load a script and return a Promise.
+        function _loadScriptAsync(src) {
+          return new Promise((resolve, reject) => {
+            try {
+              const s = document.createElement('script');
+              s.src = src;
+              s.async = true;
+              s.onload = () => resolve(s);
+              s.onerror = (e) => reject(new Error('Script load error: ' + src));
+              document.head.appendChild(s);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+
         async function startFaceDetection() {
-          const container = document.getElementById('neurovision-webcam') || document.body;
+          const container = document.getElementById('neurovision-webcam') || document.createElement('div');
+          // Ensure the overlay container is attached as the last child of <body>
+          if (!document.getElementById('neurovision-webcam')) {
+            container.id = 'neurovision-webcam';
+            container.style.position = 'absolute';
+            container.style.left = '0';
+            container.style.top = '0';
+            container.style.width = '0';
+            container.style.height = '0';
+            container.style.display = 'none';
+            container.style.zIndex = '2147483647';
+            container.style.borderRadius = '18px';
+            container.style.overflow = 'hidden';
+            container.style.pointerEvents = 'none';
+            document.body.appendChild(container);
+          } else {
+            // Move existing container to end of body so it sits above Flutter canvas
+            if (container.parentNode !== document.body) document.body.appendChild(container);
+            // ensure it's topmost in stacking context
+            container.style.zIndex = '2147483647';
+            container.style.pointerEvents = 'none';
+          }
           container.style.display = 'block';
           if (_running) return;
 
@@ -70,14 +110,16 @@
           _video.style.height = '100%';
           _video.style.objectFit = 'cover';
           _video.style.display = 'block';
-            let _tfModel = null;
-            let _faceMesh = null;
+            // Do not redeclare _tfModel/_faceMesh here — use the outer scoped variables
 
           _canvas = document.createElement('canvas');
           _canvas.style.position = 'absolute';
           _canvas.style.top = '0';
           _canvas.style.left = '0';
+          // Make sure canvas doesn't intercept pointer events so Flutter can receive input
           _canvas.style.pointerEvents = 'none';
+          // Ensure the overlay canvas is visually above the video and Flutter UI
+          _canvas.style.zIndex = '2147483647';
 
           container.appendChild(_video);
               // mute to allow autoplay in some browsers
@@ -90,7 +132,8 @@
               _video.style.height = '100%';
               _video.style.objectFit = 'cover';
               _video.style.display = 'block';
-              _video.style.zIndex = '1';
+              // video should sit behind the overlay canvas
+              _video.style.zIndex = '2147483646';
             try {
               console.log('neurovision: video loadedmetadata', _video.videoWidth, _video.videoHeight);
               // initialize canvas CSS size to match container or video size
@@ -131,28 +174,30 @@
             _ctx = _canvas.getContext('2d');
 
             // Try TF model first
-            try {
-              if (globalThis.faceLandmarksDetection) {
                 try {
-                  if (globalThis.tf && globalThis.tf.setBackend) {
-                    await globalThis.tf.setBackend('webgl');
-                    await globalThis.tf.ready();
-                  }
-                } catch (error_) {
-                  console.error('TF backend set/ready failed:', error_);
-                }
+                  if (globalThis.faceLandmarksDetection) {
+                    try {
+                      if (globalThis.tf && globalThis.tf.setBackend) {
+                        await globalThis.tf.setBackend('webgl');
+                        await globalThis.tf.ready();
+                      }
+                    } catch (error_) {
+                      console.error('TF backend set/ready failed:', error_);
+                    }
 
-                try {
-                  _tfModel = await globalThis.faceLandmarksDetection.load(globalThis.faceLandmarksDetection.SupportedPackages.mediapipeFacemesh);
-                  console.log('TF face-landmarks model loaded');
-                  _running = true;
-                  requestAnimationFrame(tick);
-                  return;
-                } catch (error_) {
-                  console.error('TF model load failed:', error_);
-                  _tfModel = null;
-                }
-              }
+                    try {
+                      // Prefer the TFJS package for live video so we don't depend on the
+                      // MediaPipe runtime files being available from CDN in the client.
+                      _tfModel = await globalThis.faceLandmarksDetection.load(globalThis.faceLandmarksDetection.SupportedPackages.tfjs);
+                      console.log('TFJS face-landmarks model loaded for live video');
+                      _running = true;
+                      requestAnimationFrame(tick);
+                      return;
+                    } catch (error_) {
+                      console.error('TFJS model load failed:', error_);
+                      _tfModel = null;
+                    }
+                  }
             } catch (err) {
               console.error('TF init error (outer):', err);
               _tfModel = null;
@@ -172,9 +217,9 @@
                   // ensure container is positioned so absolute canvas/video align
                   container.style.position = container.style.position || 'relative';
 
-                  // make sure video sits behind canvas
-                  if (_video) _video.style.zIndex = '1';
-                  if (_canvas) _canvas.style.zIndex = '2';
+                  // make sure video sits behind canvas (use very high z-index values)
+                  if (_video) _video.style.zIndex = '2147483646';
+                  if (_canvas) _canvas.style.zIndex = '2147483647';
 
                   // Set canvas device size for crisp rendering, and CSS size to logical px
                   const deviceW = Math.max(1, Math.floor(logicalW * dpr));
@@ -366,6 +411,129 @@
         globalThis.stopFaceDetection = stopFaceDetection;
         globalThis.positionOverlay = positionOverlay;
         globalThis.hideOverlay = hideOverlay;
+        // Ensure overlay is topmost if Flutter or other elements create stacking contexts later
+        globalThis.bringOverlayToFront = function() {
+          const c = document.getElementById('neurovision-webcam');
+          if (!c) return;
+          if (c.parentNode !== document.body) document.body.appendChild(c);
+          c.style.zIndex = '2147483647';
+          const cvs = c.querySelector('canvas');
+          const vid = c.querySelector('video');
+          if (vid) vid.style.zIndex = '2147483646';
+          if (cvs) cvs.style.zIndex = '2147483647';
+        };
+
+        // Process a single image provided as a data URL (returns Promise resolving
+        // to flattened landmarks [x0,y0,x1,y1,...] or null).
+        // Uses a shared MediaPipe FaceMesh instance (created on demand) and a
+        // resolver queue so multiple calls won't overwrite handlers.
+        globalThis.processImageDataUrl = function(dataUrl) {
+          return new Promise((resolve) => {
+            try {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              img.src = dataUrl;
+              img.onload = async () => {
+                try {
+                  // First try TFJS face-landmarks-detection (works without MediaPipe runtime)
+                  if (globalThis.faceLandmarksDetection) {
+                    try {
+                      if (!globalThis._tfImageModel) {
+                        console.log('neurovision: loading tfjs face-landmarks model for image');
+                        globalThis._tfImageModel = await globalThis.faceLandmarksDetection.load(globalThis.faceLandmarksDetection.SupportedPackages.tfjs);
+                      }
+                      const preds = await globalThis._tfImageModel.estimateFaces({input: img, returnTensors: false, predictIrises: true});
+                      if (preds && preds.length) {
+                        const mesh = preds[0].scaledMesh || preds[0].mesh || preds[0];
+                        const flat = new Array((mesh.length || 0) * 2);
+                        for (let i = 0; i < mesh.length; i++) {
+                          const p = mesh[i];
+                          // mesh may be [x,y,z] in pixel coords — normalize by image size
+                          const x = (p[0] || p.x || 0) / img.width;
+                          const y = (p[1] || p.y || 0) / img.height;
+                          flat[i * 2] = x;
+                          flat[i * 2 + 1] = y;
+                        }
+                        resolve(flat);
+                        return;
+                      } else {
+                        // no preds, fallthrough to other methods
+                      }
+                    } catch (tfErr) {
+                      console.warn('neurovision: tfjs image model error', tfErr);
+                    }
+                  }
+
+                  // If FaceMesh isn't present, try to load it dynamically
+                  if (!globalThis.FaceMesh) {
+                    console.log('neurovision: FaceMesh not present, attempting dynamic load');
+                    try {
+                      await _loadScriptAsync('https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.5/face_mesh.js');
+                      // small delay to allow registration
+                      await new Promise((r) => setTimeout(r, 50));
+                      console.log('neurovision: dynamic FaceMesh load attempt finished; FaceMesh=', !!globalThis.FaceMesh);
+                    } catch (errLoad) {
+                      console.warn('neurovision: failed to load FaceMesh script dynamically', errLoad);
+                      resolve(null);
+                      return;
+                    }
+                  }
+
+                  if (!globalThis.FaceMesh) {
+                    console.warn('neurovision: FaceMesh still not available after dynamic load');
+                    resolve(null);
+                    return;
+                  }
+
+                  // initialize shared FaceMesh for image processing
+                  if (!globalThis._imageFaceMesh) {
+                    console.log('neurovision: creating shared image FaceMesh');
+                    const fm = new globalThis.FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+                    fm.setOptions({maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.5, minTrackingConfidence:0.5});
+                    fm._resolvers = [];
+                    fm.onResults((results) => {
+                      const resolvers = fm._resolvers.splice(0);
+                      try {
+                        if (results && results.multiFaceLandmarks && results.multiFaceLandmarks.length) {
+                          const landmarks = results.multiFaceLandmarks[0];
+                          const flat = new Array(landmarks.length * 2);
+                          for (let i = 0; i < landmarks.length; i++) {
+                            flat[i * 2] = landmarks[i].x;
+                            flat[i * 2 + 1] = landmarks[i].y;
+                          }
+                          for (const r of resolvers) r(flat);
+                        } else {
+                          for (const r of resolvers) r(null);
+                        }
+                      } catch (e) {
+                        for (const r of resolvers) r(null);
+                      }
+                    });
+                    globalThis._imageFaceMesh = fm;
+                  }
+
+                  const fm = globalThis._imageFaceMesh;
+                  // queue resolver; will be called by onResults
+                  fm._resolvers.push(resolve);
+                  try {
+                    fm.send({image: img});
+                  } catch (err) {
+                    // immediately drain with null on error
+                    const r = fm._resolvers.pop();
+                    if (r) r(null);
+                  }
+                } catch (err) {
+                  console.error('neurovision: processImageDataUrl inner error', err);
+                  resolve(null);
+                }
+              };
+              img.onerror = (e) => { console.warn('neurovision: image load error', e); resolve(null); };
+            } catch (e) {
+              console.error('neurovision: processImageDataUrl error', e);
+              resolve(null);
+            }
+          });
+        };
       })();
     </script>
   </body>
