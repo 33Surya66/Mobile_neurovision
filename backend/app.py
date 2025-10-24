@@ -163,6 +163,18 @@ def health():
     return (jsonify(status), 200) if db_ok or not REQUIRE_MONGO else (jsonify(status), 503)
 
 
+@app.route('/', methods=['GET'])
+def index():
+    # Small landing page for convenience
+    return (
+        "<html><body><h3>NeuroVision backend</h3>"
+        "<p>Health: <a href='/health'>/health</a></p>"
+        "<p>POST to <code>/detect</code> with multipart form 'image=@file'</p>"
+        "</body></html>",
+        200,
+    )
+
+
 # Ensure CORS headers are always present even if flask-cors isn't installed
 @app.after_request
 def _add_cors_headers(response):
@@ -184,4 +196,6 @@ if __name__ == '__main__':
     # Allow overriding host/port via env for flexibility
     host = os.environ.get('APP_HOST', '0.0.0.0')
     port = int(os.environ.get('APP_PORT', 5000))
-    app.run(host=host, port=port, debug=True)
+    # Run without the automatic reloader on Windows to avoid socket/thread
+    # issues observed with the debugger/reloader (select() on closed fd).
+    app.run(host=host, port=port, debug=True, use_reloader=False)

@@ -6,30 +6,39 @@ Requirements
 - Python 3.8+ (3.10 recommended)
 - The Python packages in `requirements.txt`
 
-Install and run
+Quick start (local development)
 
-Windows / PowerShell:
+1. Create and activate a virtual environment (Windows PowerShell):
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python app.py
+.\\.venv\\Scripts\\Activate.ps1
 ```
 
-Linux / macOS:
+2. Install dependencies:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+```powershell
 pip install -r requirements.txt
-python app.py
 ```
+
+3. Create a `.env` file in `backend/` (copy `.env.template`) and set `MONGO_URI` and other vars as needed.
+
+4. Run the server (recommended on Windows):
+
+```powershell
+python run_server.py
+```
+
+This will use `waitress` if available (installed via `requirements.txt`) and avoid issues with the Flask reloader on Windows.
 
 API
 - POST /detect
   - Accepts multipart form-data (`image` file) or JSON {"dataUrl": "data:image/jpeg;base64,..."}
   - Returns JSON: {"landmarks": [x0,y0,x1,y1,...], "width":W, "height":H} or {"landmarks": null, "message": "no_face"}
+
+Utility endpoints
+- GET /health — returns {ok: true, mongo: bool, mongo_db: <name>, require_mongo: bool}
+- GET / — small index/landing page (helps Render or other hosts detect the service)
 
 Notes
 - This backend is purposely minimal to help troubleshooting face-detection on a stable environment (server-side). For production, add authentication, rate-limiting, batching, model lifecycle management, logging, and error handling.
