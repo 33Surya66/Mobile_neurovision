@@ -12,7 +12,6 @@ dependencies:
   camera: ^0.10.0+4
   provider: ^6.0.5
   permission_handler: ^10.4.0
-  flutter_native_splash: ^2.2.11
   image_picker: ^0.8.7+4
   http: ^0.13.6
 

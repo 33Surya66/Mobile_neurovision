@@ -3,9 +3,10 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:js_util' as js_util;
+import '../utils/js_util_stub.dart' if (dart.library.html) '../utils/js_util_web.dart' as js_util;
 import 'package:http/http.dart' as http;
 import 'dart:math' as math;
+import '../services/face_detection_service.dart';
 
 class ImageDetectionPage extends StatefulWidget {
   const ImageDetectionPage({Key? key}) : super(key: key);
@@ -77,8 +78,25 @@ class _ImageDetectionPageState extends State<ImageDetectionPage> {
           }
         }
       } else {
-        // Mobile/desktop placeholder: we don't yet have on-device image model in this prototype.
-        setState(() => _status = 'Image selected (mobile): processing is not implemented yet');
+        // Mobile/desktop: use our face detection service
+        setState(() => _status = 'Processing image (mobile)...');
+        try {
+          final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromImageFile(file.path);
+          if (landmarks != null && landmarks.isNotEmpty) {
+            final metrics = _computeMetricsFromNormalized(landmarks);
+            setState(() {
+              _landmarkCount = landmarks.length;
+              _landmarksNormalized = landmarks;
+              _attentionPercent = metrics['attention'];
+              _drowsinessPercent = metrics['drowsiness'];
+              _status = 'Found $_landmarkCount landmarks (mobile)';
+            });
+          } else {
+            setState(() => _status = 'No face detected in image');
+          }
+        } catch (e) {
+          setState(() => _status = 'Mobile detection error: $e');
+        }
       }
     } catch (e) {
       setState(() => _status = 'Image pick error: $e');
@@ -103,8 +121,6 @@ class _ImageDetectionPageState extends State<ImageDetectionPage> {
       final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: '{"dataUrl": "${dataUrl.replaceAll('\n', '')}"}').timeout(const Duration(seconds: 8));
       if (resp.statusCode == 200) {
         final body = resp.body;
-        // parse simple JSON without adding json package; use dart:convert
-        final json = body.isNotEmpty ? Uri.decodeComponent(body) : null;
         // safer: use dart:convert
         final parsed = body.isNotEmpty ? jsonDecode(body) : null;
         if (parsed != null && parsed['landmarks'] != null) {

@@ -77,9 +77,11 @@ def detect():
         lm = results.multi_face_landmarks[0]
         flat = []
         for p in lm.landmark:
-            # normalized coords [0..1]
-            flat.append(p.x)
-            flat.append(p.y)
+            # normalized coords [0..1] - ensure they're within bounds
+            x = max(0.0, min(1.0, p.x))
+            y = max(0.0, min(1.0, p.y))
+            flat.append(x)
+            flat.append(y)
 
         resp = {'landmarks': flat, 'width': width, 'height': height}
 

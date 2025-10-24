@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "C:/Users/surya/Downloads/Mobile_neurovision/linux"
+    "cmake.sourceDirectory": "C:/Users/surya/Downloads/Mobile_neurovision/linux",
+    "java.configuration.updateBuildConfiguration": "interactive"
 }

@@ -3,15 +3,16 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'dart:js_util' as js_util;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+// Conditional imports for web
+import '../utils/js_util_stub.dart' if (dart.library.html) '../utils/js_util_web.dart' as js_util;
+
 import '../widgets/eyetracking_overlay.dart';
-import '../widgets/web_camera_view.dart';
-import 'web_camera_screen.dart';
 import '../utils/js_bridge.dart' as js_bridge;
 import 'image_detection_page.dart';
+import '../services/face_detection_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -46,10 +47,24 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     if (!kIsWeb) {
       _initCamera();
+      _initializeFaceDetection();
     } else {
       setState(() => _status = 'Web platform — use Web Camera Test');
       // listen for JS landmark events
       js_bridge.addLandmarkListener(_onLandmarks);
+    }
+  }
+  
+  Future<void> _initializeFaceDetection() async {
+    try {
+      final bool initialized = await FaceDetectionService.initialize();
+      if (initialized) {
+        setState(() => _status = 'Face detection ready');
+      } else {
+        setState(() => _status = 'Face detection failed to initialize');
+      }
+    } catch (e) {
+      setState(() => _status = 'Face detection error: $e');
     }
   }
 
@@ -79,6 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     if (kIsWeb) js_bridge.removeLandmarkListener();
     _controller?.dispose();
+    FaceDetectionService.dispose();
     super.dispose();
   }
 
@@ -208,10 +224,22 @@ class _HomeScreenState extends State<HomeScreen> {
         _processing = true;
 
         try {
-          // TODO: Convert image to usable format and run TFLite/OpenCV inference here.
-          await Future.delayed(const Duration(milliseconds: 30)); // placeholder work
+          // Real face detection using our service
+          final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromCameraImage(image);
+          if (landmarks != null && landmarks.isNotEmpty) {
+            // Convert landmarks to the format expected by _onLandmarks
+            final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
+              'x': offset.dx,
+              'y': offset.dy,
+            }).toList();
+            _onLandmarks(landmarkMaps);
+          } else {
+            // No face detected
+            _onLandmarks([]);
+          }
         } catch (e) {
-          // ignore errors in placeholder
+          debugPrint('Face detection error: $e');
+          _onLandmarks([]);
         } finally {
           _processing = false;
         }
