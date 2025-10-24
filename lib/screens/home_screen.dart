@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:camera/camera.dart';
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -33,6 +34,8 @@ class _HomeScreenState extends State<HomeScreen> {
   // key for measuring the web placeholder's position so we can position the DOM overlay
   final GlobalKey _webPlaceholderKey = GlobalKey();
   Timer? _overlayTimer;
+  Timer? _serverTimer;
+  bool _useBackend = true; // when true, APK will upload periodic JPEGs to backend
   // realtime metrics from web landmarks
   int _landmarkCount = 0;
   double _faceAreaPercent = 0; // 0..100
@@ -215,37 +218,64 @@ class _HomeScreenState extends State<HomeScreen> {
         _streaming = true;
       });
 
-      await _controller!.startImageStream((image) async {
-        // Lightweight frame sampling + concurrency guard
-        _frameCount = (_frameCount + 1) % _frameSkip;
-        if (_frameCount != 0) return; // skip frames
-
-        if (_processing) return; // already processing
-        _processing = true;
-
-        try {
-          // Real face detection using our service
-          final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromCameraImage(image);
-          if (landmarks != null && landmarks.isNotEmpty) {
-            // Convert landmarks to the format expected by _onLandmarks
-            final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
-              'x': offset.dx,
-              'y': offset.dy,
-            }).toList();
-            _onLandmarks(landmarkMaps);
-          } else {
-            // No face detected
-            _onLandmarks([]);
+      if (_useBackend) {
+        // Start periodic JPEG captures and send to backend
+        _serverTimer?.cancel();
+        _serverTimer = Timer.periodic(const Duration(milliseconds: 700), (t) async {
+          try {
+            if (_controller == null || !_controller!.value.isInitialized) return;
+            final xfile = await _controller!.takePicture();
+            // Let the FaceDetectionService handle sending and notifying landmarks
+            await FaceDetectionService.detectFacesBySendingFile(File(xfile.path));
+            // cleanup file
+            try {
+              final f = File(xfile.path);
+              if (await f.exists()) await f.delete();
+            } catch (_) {}
+          } catch (e) {
+            debugPrint('Periodic backend upload error: $e');
           }
-        } catch (e) {
-          debugPrint('Face detection error: $e');
-          _onLandmarks([]);
-        } finally {
-          _processing = false;
-        }
-      });
+        });
+      } else {
+        // Local image stream path (existing placeholder pipeline)
+        await _controller!.startImageStream((image) async {
+          // Lightweight frame sampling + concurrency guard
+          _frameCount = (_frameCount + 1) % _frameSkip;
+          if (_frameCount != 0) return; // skip frames
+
+          if (_processing) return; // already processing
+          _processing = true;
+
+          try {
+            // Real face detection using our service
+            final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromCameraImage(image);
+            if (landmarks != null && landmarks.isNotEmpty) {
+              final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
+                'x': offset.dx,
+                'y': offset.dy,
+              }).toList();
+              _onLandmarks(landmarkMaps);
+            } else {
+              _onLandmarks([]);
+            }
+          } catch (e) {
+            debugPrint('Face detection error: $e');
+            _onLandmarks([]);
+          } finally {
+            _processing = false;
+          }
+        });
+      }
     } else {
-      await _controller!.stopImageStream();
+      // stopping
+      if (_useBackend) {
+        _serverTimer?.cancel();
+        _serverTimer = null;
+      } else {
+        try {
+          await _controller!.stopImageStream();
+        } catch (_) {}
+      }
       setState(() {
         _streaming = false;
         _status = 'Idle';

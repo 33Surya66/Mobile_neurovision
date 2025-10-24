@@ -6,6 +6,14 @@ import numpy as np
 import mediapipe as mp
 import os
 from datetime import datetime
+import sys
+try:
+    # load .env in development if present
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # python-dotenv is optional; env vars may be set in the environment
+    pass
 
 # Optional MongoDB (persistence) - only used if MONGO_URI is set
 try:
@@ -21,9 +29,17 @@ except Exception:
 
 app = Flask(__name__)
 
-# enable CORS for all origins (development). Restrict in production if needed.
+# Optional: allow restricting origins via ALLOWED_ORIGINS env (comma-separated)
+ALLOWED_ORIGINS_RAW = os.environ.get('ALLOWED_ORIGINS', '*')
+# parse comma-separated origins (allow '*' or a list)
+if ALLOWED_ORIGINS_RAW.strip() == '*' or not ALLOWED_ORIGINS_RAW.strip():
+    CORS_ORIGINS = '*'
+else:
+    CORS_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS_RAW.split(',') if o.strip()]
+
+# enable CORS for configured origins (development default '*'). Restrict in production.
 if CORS:
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
 
 mp_face_mesh = mp.solutions.face_mesh
 # Use static_image_mode=True for single-image inference (no tracking)
@@ -44,10 +60,31 @@ if MONGO_URI and MongoClient:
     except Exception as e:
         app.logger.warning(f'Could not connect to MongoDB: {e}')
 
+# If the operator requires MongoDB for this deployment, allow failing fast.
+REQUIRE_MONGO = os.environ.get('REQUIRE_MONGO', 'false').lower() == 'true'
+if REQUIRE_MONGO and not mongo_client:
+    app.logger.error('REQUIRE_MONGO is true but MongoDB connection is not available. Exiting.')
+    sys.exit(1)
+
+# Optional API key to protect /detect during development/production. If not set,
+# the endpoint is publicly callable (subject to network rules).
+DETECTION_API_KEY = os.environ.get('DETECTION_API_KEY')
+
 
 @app.route('/detect', methods=['POST'])
 def detect():
     try:
+        # Enforce API key if configured. Accept either Authorization: Bearer <key>
+        # or x-api-key header or api_key query param for convenience.
+        if DETECTION_API_KEY:
+            auth = request.headers.get('Authorization', '')
+            token = None
+            if auth.lower().startswith('bearer '):
+                token = auth.split(None, 1)[1].strip()
+            token = token or request.headers.get('x-api-key') or request.args.get('api_key')
+            if token != DETECTION_API_KEY:
+                return jsonify({'error': 'unauthorized'}), 401
+
         # Accept multipart/form-data file or JSON {dataUrl: 'data:...'}
         img_bytes = None
         if 'image' in request.files:
@@ -104,10 +141,33 @@ def detect():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/health', methods=['GET'])
+def health():
+    """Health endpoint: reports basic app + MongoDB connectivity.
+
+    Returns 200 when MongoDB is reachable (if configured), otherwise 503.
+    """
+    status = {'ok': True}
+    db_ok = False
+    try:
+        if mongo_client:
+            # ping the server
+            mongo_client.admin.command('ping')
+            db_ok = True
+    except Exception:
+        db_ok = False
+
+    status['mongo'] = db_ok
+    status['mongo_db'] = os.environ.get('MONGO_DB', 'neurovision')
+    status['require_mongo'] = REQUIRE_MONGO
+    return (jsonify(status), 200) if db_ok or not REQUIRE_MONGO else (jsonify(status), 503)
+
+
 # Ensure CORS headers are always present even if flask-cors isn't installed
 @app.after_request
 def _add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    # Mirror configured origins when possible
+    response.headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGINS if ALLOWED_ORIGINS else '*'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     return response

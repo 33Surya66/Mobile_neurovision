@@ -5,9 +5,17 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../utils/landmark_notifier.dart' as ln;
+import 'package:http_parser/http_parser.dart';
 
 class FaceDetectionService {
   static bool _isInitialized = false;
+  // Backend server URL (change to your backend address). Use https in production.
+  // For local testing with a device on the same Wi-Fi, set this to your machine's LAN IP:
+  // e.g. http://192.168.1.23:5000
+  static String backendUrl = 'http://127.0.0.1:5000';
   
   // MediaPipe Face Mesh landmark indices for eyes
   static const List<int> leftEyeIndices = [33, 160, 158, 133, 153, 144];
@@ -47,12 +55,44 @@ class FaceDetectionService {
     }
     
     try {
-      // For now, return mock landmarks - in production, run actual inference
+      // Prefer backend detection when available
+      try {
+        final res = await detectFacesBySendingFile(File(imagePath));
+        if (res != null) return res;
+      } catch (e) {
+        debugPrint('Backend detection failed, falling back to local mock: $e');
+      }
+      // Fallback mock
       return _generateMockLandmarks(640, 480); // Default image size
     } catch (e) {
       debugPrint('Face detection from file error: $e');
       return null;
     }
+  }
+
+  /// Send a JPEG file to the backend /detect endpoint and parse normalized landmarks.
+  static Future<List<Offset>?> detectFacesBySendingFile(File file) async {
+    final uri = Uri.parse('$backendUrl/detect');
+    final request = http.MultipartRequest('POST', uri);
+    request.files.add(await http.MultipartFile.fromPath('image', file.path, contentType: MediaType('image', 'jpeg')));
+    final streamed = await request.send();
+    final resp = await http.Response.fromStream(streamed);
+    if (resp.statusCode != 200) {
+      throw Exception('Backend returned ${resp.statusCode}: ${resp.body}');
+    }
+    final jsonBody = json.decode(resp.body) as Map<String, dynamic>;
+    final landmarks = jsonBody['landmarks'];
+    if (landmarks == null) return null;
+    // notify global notifier for overlay painting
+    ln.notifyLandmarksFromFlatList(landmarks as List<dynamic>);
+    // return as Offsets
+    final out = <Offset>[];
+    for (var i = 0; i + 1 < landmarks.length; i += 2) {
+      final x = (landmarks[i] ?? 0).toDouble();
+      final y = (landmarks[i + 1] ?? 0).toDouble();
+      out.add(Offset(x, y));
+    }
+    return out;
   }
   
   
