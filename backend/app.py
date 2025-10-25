@@ -203,7 +203,7 @@ def start_session():
         
         sessions[session_id] = session_data
         
-        if mongo_collection:
+        if mongo_collection is not None:
             try:
                 mongo_collection.sessions.update_one(
                     {'_id': session_id},
@@ -255,7 +255,7 @@ def end_session(session_id):
             'status': 'completed'
         })
         
-        if mongo_collection:
+        if mongo_collection is not None:
             try:
                 mongo_collection.sessions.update_one(
                     {'_id': session_id},
@@ -316,7 +316,7 @@ def detect_with_session(session_id):
                 sessions[session_id]['detections'].append(detection_data)
                 sessions[session_id]['frames_processed'] = len(sessions[session_id]['detections'])
                 
-                if mongo_collection:
+                if mongo_collection is not None:
                     try:
                         mongo_collection.detections.insert_one({
                             'session_id': session_id,
