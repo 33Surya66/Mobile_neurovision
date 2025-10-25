@@ -14,6 +14,8 @@ import '../widgets/eyetracking_overlay.dart';
 import '../utils/js_bridge.dart' as js_bridge;
 import 'image_detection_page.dart';
 import '../services/face_detection_service.dart';
+import 'dashboard_page.dart';
+import 'settings_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -237,18 +239,15 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         });
       } else {
-        // Local image stream path (existing placeholder pipeline)
-        await _controller!.startImageStream((image) async {
-          // Lightweight frame sampling + concurrency guard
-          _frameCount = (_frameCount + 1) % _frameSkip;
-          if (_frameCount != 0) return; // skip frames
-
-          if (_processing) return; // already processing
-          _processing = true;
-
+        // Local on-device path: periodically take a picture and run ML Kit on it.
+        _serverTimer?.cancel();
+        _serverTimer = Timer.periodic(const Duration(milliseconds: 500), (t) async {
           try {
-            // Real face detection using our service
-            final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromCameraImage(image);
+            if (_controller == null || !_controller!.value.isInitialized) return;
+            if (_processing) return;
+            _processing = true;
+            final xfile = await _controller!.takePicture();
+            final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromImageFile(xfile.path);
             if (landmarks != null && landmarks.isNotEmpty) {
               final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
                 'x': offset.dx,
@@ -258,9 +257,13 @@ class _HomeScreenState extends State<HomeScreen> {
             } else {
               _onLandmarks([]);
             }
+            // cleanup
+            try {
+              final f = File(xfile.path);
+              if (await f.exists()) await f.delete();
+            } catch (_) {}
           } catch (e) {
-            debugPrint('Face detection error: $e');
-            _onLandmarks([]);
+            debugPrint('Periodic MLKit capture error: $e');
           } finally {
             _processing = false;
           }
@@ -563,7 +566,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       const _BottomNavItem(icon: Icons.monitor_heart, label: 'Monitor', active: true),
-                      const _BottomNavItem(icon: Icons.dashboard, label: 'Dashboard'),
+
+                      // Dashboard navigation
+                      InkWell(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage())),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.dashboard, color: Colors.white54),
+                              SizedBox(height: 6),
+                              Text('Dashboard', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+
                       InkWell(
                         onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImageDetectionPage())),
                         child: const Padding(
@@ -578,7 +597,31 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ),
-                      const _BottomNavItem(icon: Icons.settings, label: 'Settings'),
+
+                      // Settings navigation (await settings changes)
+                      InkWell(
+                        onTap: () async {
+                          final result = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(useBackend: _useBackend, frameSkip: _frameSkip)));
+                          if (result is Map<String, dynamic>) {
+                            setState(() {
+                              if (result.containsKey('useBackend')) _useBackend = result['useBackend'] as bool;
+                              if (result.containsKey('frameSkip')) _frameSkip = result['frameSkip'] as int;
+                              if (result.containsKey('backendUrl')) FaceDetectionService.backendUrl = result['backendUrl'] as String;
+                            });
+                          }
+                        },
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.settings, color: Colors.white54),
+                              SizedBox(height: 6),
+                              Text('Settings', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   )
                 ],
