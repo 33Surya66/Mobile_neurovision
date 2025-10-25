@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../services/session_manager.dart';
 
 // Conditional imports for web
 import '../utils/js_util_stub.dart' if (dart.library.html) '../utils/js_util_web.dart' as js_util;
@@ -117,28 +118,126 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // Timer and detection state
+  Timer? _detectionTimer;
+  Stopwatch _recordingStopwatch = Stopwatch();
+  Duration _recordingDuration = Duration.zero;
+  List<Map<String, dynamic>> _detectionResults = [];
+  
   Future<void> _startRecordingSession() async {
-    // Initialize session manager with your API key
-    _sessionManager.initialize(apiKey: 'your-api-key-here'); // TODO: Get from secure storage
-    
-    // Start a new session
-    await _sessionManager.startSession(
-      userId: 'current-user-id', // TODO: Get from auth service
-      deviceId: 'device-id',     // TODO: Get device ID
-      metadata: {
-        'app_version': '1.0.0',
-        'device_info': '...',    // TODO: Add device info
-      },
-    );
-    
-    // Start the camera stream if not already started
-    if (!_streaming) {
-      await _toggleStream();
+    try {
+      setState(() {
+        _status = 'Starting session...';
+        _isRecording = true;
+        _recordingStopwatch.start();
+        _recordingDuration = Duration.zero;
+        _detectionResults.clear();
+      });
+
+      // Initialize session manager with your API key
+      _sessionManager.initialize(apiKey: 'your-api-key-here'); // TODO: Get from secure storage
+      
+      // Start a new session
+      await _sessionManager.startSession(
+        userId: 'current-user-id', // TODO: Get from auth service
+        deviceId: 'device-id',     // TODO: Get device ID
+        metadata: {
+          'app_version': '1.0.0',
+          'platform': Platform.operatingSystem,
+          'device_info': '${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+        },
+      );
+
+      // Start the camera stream if not already started
+      if (!_streaming) {
+        await _toggleStream();
+      }
+
+      // Start periodic detection
+      _startPeriodicDetection();
+      
+      // Start timer to update UI
+      _detectionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (mounted) {
+          setState(() {
+            _recordingDuration = _recordingStopwatch.elapsed;
+          });
+        }
+      });
+      
+      setState(() => _status = 'Recording...');
+    } catch (e) {
+      setState(() => _status = 'Error starting session: $e');
+      rethrow;
+    }
+  }
+  
+  void _startPeriodicDetection() {
+    // Process frames every 500ms (adjust as needed)
+    _detectionTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      if (_controller != null && _controller!.value.isInitialized && !_processing) {
+        try {
+          setState(() => _processing = true);
+          
+          // Capture frame
+          final image = await _controller!.takePicture();
+          final imageFile = File(image.path);
+          
+          // Detect faces
+          final faces = await FaceDetectionService.detectFacesFromImageFile(imageFile);
+          
+          if (faces != null && faces.isNotEmpty) {
+            // Process and send to backend
+            final detectionData = {
+              'timestamp': DateTime.now().toIso8601String(),
+              'duration': _recordingStopwatch.elapsed.inMilliseconds,
+              'face_count': faces.length,
+              'metrics': faces.map((face) => face.toJson()).toList(),
+            };
+            
+            _detectionResults.add(detectionData);
+            
+            // Send to backend
+            if (_useBackend) {
+              await _sendDetectionData(detectionData);
+            }
+            
+            // Update UI with latest detection
+            if (mounted) {
+              setState(() {
+                _landmarkCount = faces.length;
+                // Update other metrics as needed
+              });
+            }
+          }
+        } catch (e) {
+          debugPrint('Error in periodic detection: $e');
+        } finally {
+          if (mounted) {
+            setState(() => _processing = false);
+          }
+        }
+      }
+    });
+  }
+  
+  Future<void> _sendDetectionData(Map<String, dynamic> data) async {
+    try {
+      // TODO: Implement your API call to send detection data
+      // Example:
+      // await ApiService.sendDetectionData(data);
+      debugPrint('Sending detection data: $data');
+    } catch (e) {
+      debugPrint('Error sending detection data: $e');
     }
   }
   
   Future<void> _stopRecordingSession() async {
     try {
+      // Stop timers
+      _detectionTimer?.cancel();
+      _recordingStopwatch.stop();
+      
       // Stop the camera stream if needed
       if (_streaming) {
         await _toggleStream();
@@ -146,6 +245,8 @@ class _HomeScreenState extends State<HomeScreen> {
       
       // End the current session
       if (_sessionManager.isActive) {
+        // Save all detection results before ending session
+        await _saveDetectionResults();
         await _sessionManager.endSession();
       }
     } catch (e) {
@@ -154,8 +255,34 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _buildRecordButton() {
+    return ElevatedButton.icon(
+      onPressed: _isRecording ? _stopRecordingSession : _startRecordingSession,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: _isRecording ? Colors.red : Colors.green,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      ),
+      icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
+      label: Text(_isRecording ? 'STOP' : 'RECORD'),
+    );
+  }
+
+  Future<void> _saveDetectionResults() async {
+    if (_detectionResults.isEmpty) return;
+    
+    try {
+      // Save to local storage or send to server
+      debugPrint('Saving ${_detectionResults.length} detection results');
+      // TODO: Implement saving logic (e.g., save to local database or send to server)
+    } catch (e) {
+      debugPrint('Error saving detection results: $e');
+    }
+  }
+
   @override
   void dispose() {
+    _detectionTimer?.cancel();
+    _recordingStopwatch.stop();
     _sessionManager.dispose();
     if (kIsWeb) js_bridge.removeLandmarkListener();
     _controller?.dispose();
@@ -271,7 +398,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _toggleStream() async {
+  Future<void> _toggleStream() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
     if (!_streaming) {
@@ -473,9 +600,79 @@ class _HomeScreenState extends State<HomeScreen> {
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
+        actions: [
+          // Status indicator
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            margin: const EdgeInsets.only(right: 8, top: 8, bottom: 8),
+            decoration: BoxDecoration(
+              color: _isRecording ? Colors.red.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: _isRecording ? Colors.red : Colors.grey,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _isRecording 
+                    ? _formatDuration(_recordingDuration)
+                    : 'IDLE',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsPage()),
+              );
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
+          // Status bar
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+            color: Colors.black.withOpacity(0.5),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _status,
+                  style: const TextStyle(color: Colors.white),
+                ),
+                if (_isRecording) ...[
+                  _buildMetricChip(
+                    'Faces',
+                    '$_landmarkCount',
+                    Icons.face,
+                  ),
+                  _buildMetricChip(
+                    'Attention',
+                    '${_attentionPercent.toStringAsFixed(1)}%',
+                    Icons.visibility,
+                  ),
+                  _buildMetricChip(
+                    'Drowsiness',
+                    '${_drowsinessPercent.toStringAsFixed(1)}%',
+                    Icons.nightlight_round,
+                  ),
+                ],
+              ],
+            ),
+          ),
           // Top half: camera area (mobile camera preview or web placeholder)
           Expanded(
             flex: 5,
@@ -740,8 +937,15 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-}
 
+  String _formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = twoDigits(d.inHours.remainder(24));
+    final minutes = twoDigits(d.inMinutes.remainder(60));
+    final seconds = twoDigits(d.inSeconds.remainder(60));
+    return '$hours:$minutes:$seconds';
+  }
+}
 
 class _Badge extends StatelessWidget {
   final String text;

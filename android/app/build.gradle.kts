@@ -30,17 +30,19 @@ android {
         multiDexEnabled = true
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+        getByName("release") {
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
-            // Add build config field for release
-            buildConfigField("String", "API_BASE_URL", '"https://neurovision-backend.onrender.com"')
+            buildConfigField("String", "API_BASE_URL", "\"https://neurovision-backend.onrender.com\"")
         }
-        debug {
-            // For development, you might want to use a different URL
-            buildConfigField("String", "API_BASE_URL", '"https://neurovision-backend.onrender.com"')
+        getByName("debug") {
+            buildConfigField("String", "API_BASE_URL", "\"https://neurovision-backend.onrender.com\"")
         }
     }
 }

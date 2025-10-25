@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:flutter/foundation.dart';
 
 class ApiService {
@@ -68,7 +69,7 @@ class ApiService {
   }
 
   // Face Detection
-  static Future<List<Map<String, double>> detectFaces(
+  static Future<List<Map<String, double>>> detectFaces(
     List<int> imageBytes, {
     String? imagePath,
     bool useSession = true,
@@ -145,15 +146,4 @@ class ApiService {
       rethrow;
     }
   }
-}
-
-// Helper class for media type
-class MediaType {
-  final String type;
-  final String subtype;
-  
-  const MediaType(this.type, this.subtype);
-  
-  @override
-  String toString() => '$type/$subtype';
 }

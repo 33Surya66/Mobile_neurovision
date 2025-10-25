@@ -15,8 +15,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 class FaceDetectionService {
   static bool _isInitialized = false;
   static FaceDetector? _mlkitDetector;
-  // Backend server URL is now managed by ApiService
-  // Configure the base URL in ApiService._baseUrl
+  static String backendUrl = 'https://neurovision-backend.onrender.com';
   
   // MediaPipe Face Mesh landmark indices for eyes
   static const List<int> leftEyeIndices = [33, 160, 158, 133, 153, 144];
