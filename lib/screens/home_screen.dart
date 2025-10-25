@@ -28,6 +28,8 @@ class _HomeScreenState extends State<HomeScreen> {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _streaming = false;
+  bool _isRecording = false;
+  final SessionManager _sessionManager = SessionManager();
   String _status = 'Idle';
   bool _processing = false;
   int _frameSkip = 3; // process every 3rd frame
@@ -77,6 +79,25 @@ class _HomeScreenState extends State<HomeScreen> {
   // Unified handler for the Record button. Provides immediate UI feedback and
   // calls the appropriate start/stop functions for web vs native.
   Future<void> _onRecordPressed() async {
+    if (!_isRecording) {
+      // Start a new recording session
+      try {
+        await _startRecordingSession();
+        setState(() => _isRecording = true);
+      } catch (e) {
+        setState(() => _status = 'Failed to start recording: $e');
+        return;
+      }
+    } else {
+      // Stop the current recording session
+      try {
+        await _stopRecordingSession();
+        setState(() => _isRecording = false);
+      } catch (e) {
+        setState(() => _status = 'Failed to stop recording: $e');
+        return;
+      }
+    }
     if (kIsWeb) {
       if (_streaming) {
         setState(() => _status = 'Stopping web camera...');
@@ -96,8 +117,46 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _startRecordingSession() async {
+    // Initialize session manager with your API key
+    _sessionManager.initialize(apiKey: 'your-api-key-here'); // TODO: Get from secure storage
+    
+    // Start a new session
+    await _sessionManager.startSession(
+      userId: 'current-user-id', // TODO: Get from auth service
+      deviceId: 'device-id',     // TODO: Get device ID
+      metadata: {
+        'app_version': '1.0.0',
+        'device_info': '...',    // TODO: Add device info
+      },
+    );
+    
+    // Start the camera stream if not already started
+    if (!_streaming) {
+      await _toggleStream();
+    }
+  }
+  
+  Future<void> _stopRecordingSession() async {
+    try {
+      // Stop the camera stream if needed
+      if (_streaming) {
+        await _toggleStream();
+      }
+      
+      // End the current session
+      if (_sessionManager.isActive) {
+        await _sessionManager.endSession();
+      }
+    } catch (e) {
+      debugPrint('Error stopping recording session: $e');
+      rethrow;
+    }
+  }
+
   @override
   void dispose() {
+    _sessionManager.dispose();
     if (kIsWeb) js_bridge.removeLandmarkListener();
     _controller?.dispose();
     FaceDetectionService.dispose();
@@ -596,14 +655,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 12),
                   Row(
                     children: [
-                      FloatingActionButton(
-                        backgroundColor: Colors.deepPurpleAccent,
-                        mini: true,
-                        onPressed: () {
-                          // sample play action
-                        },
-                        child: const Icon(Icons.play_arrow),
-                      ),
+                      _buildRecordButton(),
                       const SizedBox(width: 12),
                       Expanded(
                         child: ElevatedButton(

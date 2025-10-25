@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: neurovision-backend
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: gunicorn backend.app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.5
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        sync: false  # Will be set in Render dashboard
+      - key: DETECTION_API_KEY
+        sync: false  # Will be set in Render dashboard
+      - key: ALLOWED_ORIGINS
+        value: "*"  # Restrict in production
+    plan: free
+    numInstances: 1

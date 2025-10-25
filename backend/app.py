@@ -5,8 +5,10 @@ from PIL import Image
 import numpy as np
 import mediapipe as mp
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import sys
+from bson import ObjectId
+import uuid
 try:
     # load .env in development if present
     from dotenv import load_dotenv
@@ -140,6 +142,119 @@ def detect():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+# Session management
+sessions = {}
+
+@app.route('/api/sessions/start', methods=['POST'])
+def start_session():
+    try:
+        data = request.get_json() or {}
+        session_id = str(uuid.uuid4())
+        
+        session_data = {
+            'session_id': session_id,
+            'start_time': datetime.now(timezone.utc),
+            'end_time': None,
+            'status': 'active',
+            'metadata': data.get('metadata', {}),
+            'frames_processed': 0,
+            'detections': []
+        }
+        
+        sessions[session_id] = session_data
+        
+        if mongo_collection:
+            try:
+                mongo_collection.sessions.update_one(
+                    {'_id': session_id},
+                    {'$set': session_data},
+                    upsert=True
+                )
+            except Exception as e:
+                app.logger.error(f'Failed to save session to MongoDB: {e}')
+        
+        return jsonify({
+            'session_id': session_id,
+            'status': 'started',
+            'start_time': session_data['start_time'].isoformat()
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/sessions/<session_id>/end', methods=['POST'])
+def end_session(session_id):
+    if session_id not in sessions:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    sessions[session_id].update({
+        'end_time': datetime.now(timezone.utc),
+        'status': 'completed'
+    })
+    
+    if mongo_collection:
+        try:
+            mongo_collection.sessions.update_one(
+                {'_id': session_id},
+                {'$set': {
+                    'end_time': sessions[session_id]['end_time'],
+                    'status': 'completed'
+                }}
+            )
+        except Exception as e:
+            app.logger.error(f'Failed to update session in MongoDB: {e}')
+    
+    return jsonify({
+        'session_id': session_id,
+        'status': 'completed',
+        'end_time': sessions[session_id]['end_time'].isoformat()
+    })
+
+@app.route('/api/sessions/<session_id>/detect', methods=['POST'])
+def detect_with_session(session_id):
+    if session_id not in sessions:
+        return jsonify({'error': 'Session not found or expired'}), 404
+    
+    try:
+        # Process the detection as before
+        response = detect()
+        
+        # If detection was successful, log it to the session
+        if response[1] == 200:
+            detection_data = {
+                'timestamp': datetime.now(timezone.utc),
+                'data': response[0].get_json(),
+                'source': request.remote_addr
+            }
+            
+            sessions[session_id]['detections'].append(detection_data)
+            sessions[session_id]['frames_processed'] += 1
+            
+            if mongo_collection:
+                try:
+                    mongo_collection.detections.insert_one({
+                        'session_id': session_id,
+                        **detection_data
+                    })
+                except Exception as e:
+                    app.logger.error(f'Failed to save detection: {e}')
+        
+        return response
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/sessions/<session_id>', methods=['GET'])
+def get_session(session_id):
+    if session_id not in sessions:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    session = sessions[session_id].copy()
+    # Convert datetime objects to ISO format for JSON serialization
+    for time_field in ['start_time', 'end_time']:
+        if session.get(time_field):
+            session[time_field] = session[time_field].isoformat()
+    
+    return jsonify(session)
 
 @app.route('/health', methods=['GET'])
 def health():
