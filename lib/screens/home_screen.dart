@@ -184,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final imageFile = File(image.path);
           
           // Detect faces
-          final faces = await FaceDetectionService.detectFacesFromImageFile(imageFile);
+          final faces = await FaceDetectionService.detectFacesFromImageFile(imageFile.path);
           
           if (faces != null && faces.isNotEmpty) {
             // Process and send to backend
@@ -192,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> {
               'timestamp': DateTime.now().toIso8601String(),
               'duration': _recordingStopwatch.elapsed.inMilliseconds,
               'face_count': faces.length,
-              'metrics': faces.map((face) => face.toJson()).toList(),
+              'metrics': faces.map((face) => {'x': face.dx, 'y': face.dy}).toList(),
             };
             
             _detectionResults.add(detectionData);
@@ -253,6 +253,31 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint('Error stopping recording session: $e');
       rethrow;
     }
+  }
+
+  Widget _buildMetricChip(String label, String value, IconData icon) {
+    return Container(
+      margin: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.3),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Colors.white),
+          const SizedBox(width: 4),
+          Text(
+            '$label: $value',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildRecordButton() {
@@ -634,8 +659,16 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const SettingsPage()),
-              );
+                MaterialPageRoute(
+                  builder: (context) => SettingsPage(
+                    useBackend: _useBackend,
+                    frameSkip: _frameSkip,
+                  ),
+                ),
+              ).then((_) {
+                // Update local state when returning from settings
+                setState(() {});
+              });
             },
           ),
         ],
