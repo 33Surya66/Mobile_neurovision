@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../utils/landmark_notifier.dart';
+import 'face_painter.dart';
+import '../services/metrics_service.dart';
 
 class EyetrackingOverlay extends StatelessWidget {
   const EyetrackingOverlay({Key? key}) : super(key: key);
@@ -10,9 +12,36 @@ class EyetrackingOverlay extends StatelessWidget {
       child: ValueListenableBuilder<List<Offset>>(
         valueListenable: landmarksNotifier,
         builder: (context, landmarks, _) {
-          return CustomPaint(
-            painter: _DynamicOverlayPainter(landmarks: landmarks),
-            child: Container(),
+          // update metrics service
+          MetricsService.processLandmarks(landmarks);
+          return Stack(
+            children: [
+              CustomPaint(
+                painter: FacePainter(landmarks: landmarks),
+                child: Container(),
+              ),
+              Positioned(
+                left: 8,
+                top: 8,
+                child: ValueListenableBuilder<FaceMetrics>(
+                  valueListenable: MetricsService.metricsNotifier,
+                  builder: (context, m, _) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(color: Colors.black.withOpacity(0.4), borderRadius: BorderRadius.circular(8)),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('EAR: ${m.ear}', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          Text('Drowsy: ${m.drowsinessPercent}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          Text('Blinks: ${m.blinkCount}', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           );
         },
       ),

@@ -32,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _processing = false;
   int _frameSkip = 3; // process every 3rd frame
   int _frameCount = 0;
+  int _captureEveryFrames = 24; // capture once every N frames
   bool _permissionRequested = false;
   // key for measuring the web placeholder's position so we can position the DOM overlay
   final GlobalKey _webPlaceholderKey = GlobalKey();
@@ -238,37 +239,92 @@ class _HomeScreenState extends State<HomeScreen> {
             debugPrint('Periodic backend upload error: $e');
           }
         });
-      } else {
-        // Local on-device path: periodically take a picture and run ML Kit on it.
-        _serverTimer?.cancel();
-        _serverTimer = Timer.periodic(const Duration(milliseconds: 500), (t) async {
-          try {
-            if (_controller == null || !_controller!.value.isInitialized) return;
-            if (_processing) return;
-            _processing = true;
-            final xfile = await _controller!.takePicture();
-            final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromImageFile(xfile.path);
-            if (landmarks != null && landmarks.isNotEmpty) {
-              final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
-                'x': offset.dx,
-                'y': offset.dy,
-              }).toList();
-              _onLandmarks(landmarkMaps);
-            } else {
-              _onLandmarks([]);
-            }
-            // cleanup
+        } else {
+          // Local on-device path: use the image stream to count frames and capture once every N frames.
+          _serverTimer?.cancel();
+          _frameCount = 0;
+
+          // Define listener as a variable so we can restart it after stopping/starting
+          late void Function(CameraImage) imageListener;
+          imageListener = (CameraImage image) async {
             try {
-              final f = File(xfile.path);
-              if (await f.exists()) await f.delete();
-            } catch (_) {}
+              _frameCount++;
+              // Only capture on the configured interval and when not already processing
+              if (_frameCount % _captureEveryFrames != 0) return;
+              if (_processing) return;
+              _processing = true;
+
+              // Stop the image stream to safely take a picture
+              try {
+                await _controller?.stopImageStream();
+              } catch (_) {}
+
+              // Take a high-quality picture for ML Kit
+              final xfile = await _controller!.takePicture();
+              final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromImageFile(xfile.path);
+              if (landmarks != null && landmarks.isNotEmpty) {
+                final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
+                  'x': offset.dx,
+                  'y': offset.dy,
+                }).toList();
+                _onLandmarks(landmarkMaps);
+              } else {
+                _onLandmarks([]);
+              }
+
+              // cleanup
+              try {
+                final f = File(xfile.path);
+                if (await f.exists()) await f.delete();
+              } catch (_) {}
+
+              // Restart the image stream to continue counting frames
+              try {
+                await _controller?.startImageStream(imageListener);
+              } catch (e) {
+                debugPrint('Error restarting image stream: $e');
+              }
+            } catch (e) {
+              debugPrint('Frame-based capture error: $e');
+            } finally {
+              _processing = false;
+            }
+          };
+
+          // Start the image stream to begin counting frames
+          try {
+            await _controller?.startImageStream(imageListener);
           } catch (e) {
-            debugPrint('Periodic MLKit capture error: $e');
-          } finally {
-            _processing = false;
+            debugPrint('Failed to start image stream for frame counting: $e');
+            // Fallback to periodic picture if image stream isn't supported
+            _serverTimer = Timer.periodic(const Duration(milliseconds: 500), (t) async {
+              if (_controller == null || !_controller!.value.isInitialized) return;
+              if (_processing) return;
+              _processing = true;
+              try {
+                final xfile = await _controller!.takePicture();
+                final List<Offset>? landmarks = await FaceDetectionService.detectFacesFromImageFile(xfile.path);
+                if (landmarks != null && landmarks.isNotEmpty) {
+                  final List<Map<String, double>> landmarkMaps = landmarks.map((offset) => {
+                    'x': offset.dx,
+                    'y': offset.dy,
+                  }).toList();
+                  _onLandmarks(landmarkMaps);
+                } else {
+                  _onLandmarks([]);
+                }
+                try {
+                  final f = File(xfile.path);
+                  if (await f.exists()) await f.delete();
+                } catch (_) {}
+              } catch (e) {
+                debugPrint('Periodic MLKit capture fallback error: $e');
+              } finally {
+                _processing = false;
+              }
+            });
           }
-        });
-      }
+        }
     } else {
       // stopping
       if (_useBackend) {

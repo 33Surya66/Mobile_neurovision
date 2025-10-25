@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
@@ -117,32 +118,60 @@ class FaceDetectionService {
       final faces = await _mlkitDetector!.processImage(inputImage);
       if (faces.isEmpty) return <Offset>[];
 
-      final out = <Offset>[];
-      for (final face in faces) {
-        final bb = face.boundingBox;
-        final imgW = bb.width > 0 ? bb.width : 1;
-        final imgH = bb.height > 0 ? bb.height : 1;
-        // Use contours when available
-        if (face.contours.isNotEmpty) {
-          face.contours.forEach((type, contour) {
-            if (contour?.points != null) {
-              for (final p in contour!.points) {
-                out.add(Offset((p.x / imgW).clamp(0.0, 1.0), (p.y / imgH).clamp(0.0, 1.0)));
-              }
-            }
-          });
-        } else {
-          final cx = (bb.left + bb.right) / 2.0;
-          final cy = (bb.top + bb.bottom) / 2.0;
-          out.add(Offset((cx / imgW).clamp(0.0, 1.0), (cy / imgH).clamp(0.0, 1.0)));
+      // Load actual image dimensions to normalize points to 0..1 across the image
+      final bytes = await File(path).readAsBytes();
+      final uiImage = await _decodeImageFromList(bytes);
+      final imgW = uiImage.width.toDouble();
+      final imgH = uiImage.height.toDouble();
+
+      // Choose the primary face (largest bounding box area) to drive metrics
+      Face primary = faces.first;
+      double maxArea = 0.0;
+      for (final f in faces) {
+        final a = f.boundingBox.width * f.boundingBox.height;
+        if (a > maxArea) {
+          maxArea = a;
+          primary = f;
         }
       }
+
+      final out = <Offset>[];
+      // Prefer contours -> landmarks -> bounding box center
+      if (primary.contours.isNotEmpty) {
+        primary.contours.forEach((type, contour) {
+          if (contour?.points != null) {
+            for (final p in contour!.points) {
+              out.add(Offset((p.x / imgW).clamp(0.0, 1.0), (p.y / imgH).clamp(0.0, 1.0)));
+            }
+          }
+        });
+      } else if (primary.landmarks.isNotEmpty) {
+        primary.landmarks.forEach((type, lm) {
+          if (lm?.position != null) {
+            final p = lm!.position;
+            out.add(Offset((p.x / imgW).clamp(0.0, 1.0), (p.y / imgH).clamp(0.0, 1.0)));
+          }
+        });
+      } else {
+        final bb = primary.boundingBox;
+        final cx = (bb.left + bb.right) / 2.0;
+        final cy = (bb.top + bb.bottom) / 2.0;
+        out.add(Offset((cx / imgW).clamp(0.0, 1.0), (cy / imgH).clamp(0.0, 1.0)));
+      }
+
+      // Publish normalized landmarks for overlay and metrics
       ln.landmarksNotifier.value = out;
       return out;
     } catch (e, st) {
       debugPrint('detectFacesFromFilePath error: $e\n$st');
       return null;
     }
+  }
+
+  static Future<ui.Image> _decodeImageFromList(Uint8List data) async {
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromList(data, (img) => completer.complete(img));
+    return completer.future;
   }
 
   /// Send a JPEG file to the backend /detect endpoint and parse normalized landmarks.
