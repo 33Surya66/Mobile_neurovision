@@ -944,7 +944,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             setState(() {
                               if (result.containsKey('useBackend')) _useBackend = result['useBackend'] as bool;
                               if (result.containsKey('frameSkip')) _frameSkip = result['frameSkip'] as int;
-                              if (result.containsKey('backendUrl')) FaceDetectionService.backendUrl = result['backendUrl'] as String;
+                              // Backend URL is now handled through ApiService
                             });
                           }
                         },
