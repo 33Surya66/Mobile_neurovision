@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 class ApiService {
   static const String _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://your-render-app.onrender.com',
+    defaultValue: 'https://neurovision-backend.onrender.com',
   );
   
   static String? _apiKey;

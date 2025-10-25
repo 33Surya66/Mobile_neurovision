@@ -117,7 +117,7 @@ class _ImageDetectionPageState extends State<ImageDetectionPage> {
 
   Future<bool> _callBackendWithDataUrl(String dataUrl) async {
     try {
-      final uri = Uri.parse('http://127.0.0.1:5000/detect');
+      final uri = Uri.parse('https://neurovision-backend.onrender.com/detect');
       final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: '{"dataUrl": "${dataUrl.replaceAll('\n', '')}"}').timeout(const Duration(seconds: 8));
       if (resp.statusCode == 200) {
         final body = resp.body;
