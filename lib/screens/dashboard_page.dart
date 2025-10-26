@@ -14,19 +14,82 @@ class DashboardPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const SizedBox(height: 8),
+            // First row of metrics
             Row(
               children: [
                 Expanded(
                   child: ValueListenableBuilder<FaceMetrics>(
                     valueListenable: MetricsService.metricsNotifier,
-                    builder: (context, m, _) => _StatCard(title: 'Attention', value: '${m.attentionPercent}%'),
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Attention',
+                      value: '${m.attentionPercent.toStringAsFixed(1)}%',
+                      color: Colors.blue,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: ValueListenableBuilder<FaceMetrics>(
                     valueListenable: MetricsService.metricsNotifier,
-                    builder: (context, m, _) => _StatCard(title: 'Drowsiness', value: '${m.drowsinessPercent}%'),
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Drowsiness',
+                      value: '${m.drowsinessPercent.toStringAsFixed(1)}%',
+                      color: Colors.orange,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Second row of metrics
+            Row(
+              children: [
+                Expanded(
+                  child: ValueListenableBuilder<FaceMetrics>(
+                    valueListenable: MetricsService.metricsNotifier,
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Cognitive Load',
+                      value: '${m.cognitiveLoad.toStringAsFixed(1)}%',
+                      color: Colors.purple,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ValueListenableBuilder<FaceMetrics>(
+                    valueListenable: MetricsService.metricsNotifier,
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Gaze Stability',
+                      value: '${m.gazeStability.toStringAsFixed(1)}%',
+                      color: Colors.teal,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Third row of metrics
+            Row(
+              children: [
+                Expanded(
+                  child: ValueListenableBuilder<FaceMetrics>(
+                    valueListenable: MetricsService.metricsNotifier,
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Blink Rate',
+                      value: '${m.blinkRate.toStringAsFixed(1)}/min',
+                      color: Colors.cyan,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ValueListenableBuilder<FaceMetrics>(
+                    valueListenable: MetricsService.metricsNotifier,
+                    builder: (context, m, _) => _StatCard(
+                      title: 'Facial Symmetry',
+                      value: '${m.facialSymmetry.toStringAsFixed(1)}%',
+                      color: Colors.pink,
+                    ),
                   ),
                 ),
               ],
@@ -36,11 +99,33 @@ class DashboardPage extends StatelessWidget {
               child: ListView(
                 children: [
                   const SizedBox(height: 8),
-                  SparklineCard(title: 'Attention (recent)', notifier: MetricsService.attentionSeriesNotifier, lineColor: Colors.deepOrange),
+                  SparklineCard(
+                    title: 'Attention (recent)',
+                    notifier: MetricsService.attentionSeriesNotifier,
+                    lineColor: Colors.blue,
+                    maxY: 100,
+                  ),
                   const SizedBox(height: 12),
-                  SparklineCard(title: 'Drowsiness (recent)', notifier: MetricsService.drowsinessSeriesNotifier, lineColor: Colors.amber),
+                  SparklineCard(
+                    title: 'Cognitive Load (recent)',
+                    notifier: MetricsService.cognitiveLoadSeriesNotifier,
+                    lineColor: Colors.purple,
+                    maxY: 100,
+                  ),
                   const SizedBox(height: 12),
-                  SparklineCard(title: 'Blink Count (cumulative)', notifier: MetricsService.blinkSeriesNotifier, lineColor: Colors.cyan),
+                  SparklineCard(
+                    title: 'Gaze Stability (recent)',
+                    notifier: MetricsService.gazeStabilitySeriesNotifier,
+                    lineColor: Colors.teal,
+                    maxY: 100,
+                  ),
+                  const SizedBox(height: 12),
+                  SparklineCard(
+                    title: 'Blink Rate (per min)',
+                    notifier: MetricsService.blinkRateSeriesNotifier,
+                    lineColor: Colors.cyan,
+                    maxY: 60, // Assuming max 60 blinks per minute
+                  ),
                 ],
               ),
             )
@@ -55,7 +140,15 @@ class SparklineCard extends StatelessWidget {
   final String title;
   final ValueNotifier<List<double>> notifier;
   final Color lineColor;
-  const SparklineCard({Key? key, required this.title, required this.notifier, required this.lineColor}) : super(key: key);
+  final double? maxY; // Optional max Y value for scaling
+  
+  const SparklineCard({
+    Key? key, 
+    required this.title, 
+    required this.notifier, 
+    required this.lineColor,
+    this.maxY,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +170,11 @@ class SparklineCard extends StatelessWidget {
               valueListenable: notifier,
               builder: (context, list, _) {
                 return CustomPaint(
-                  painter: _SparklinePainter(data: list, color: lineColor),
+                  painter: _SparklinePainter(
+                    data: list,
+                    color: lineColor,
+                    maxY: maxY,
+                  ),
                   child: Container(),
                 );
               },
@@ -92,7 +189,13 @@ class SparklineCard extends StatelessWidget {
 class _SparklinePainter extends CustomPainter {
   final List<double> data;
   final Color color;
-  _SparklinePainter({required this.data, required this.color});
+  final double? maxY;
+  
+  _SparklinePainter({
+    required this.data, 
+    required this.color,
+    this.maxY,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -108,8 +211,10 @@ class _SparklinePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     final path = Path();
+    if (data.isEmpty) return;
+    
     final minVal = data.reduce((a, b) => a < b ? a : b);
-    final maxVal = data.reduce((a, b) => a > b ? a : b);
+    final maxVal = maxY ?? data.reduce((a, b) => a > b ? a : b);
     final range = (maxVal - minVal) == 0 ? 1.0 : (maxVal - minVal);
 
     for (int i = 0; i < data.length; i++) {
@@ -122,13 +227,23 @@ class _SparklinePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _SparklinePainter oldDelegate) => oldDelegate.data != data || oldDelegate.color != color;
+  bool shouldRepaint(covariant _SparklinePainter oldDelegate) => 
+      oldDelegate.data != data || 
+      oldDelegate.color != color ||
+      oldDelegate.maxY != maxY;
 }
 
 class _StatCard extends StatelessWidget {
   final String title;
   final String value;
-  const _StatCard({Key? key, required this.title, required this.value}) : super(key: key);
+  final Color color;
+
+  const _StatCard({
+    Key? key,
+    required this.title,
+    required this.value,
+    this.color = Colors.blue,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {

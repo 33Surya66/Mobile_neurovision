@@ -4,6 +4,29 @@ import 'package:flutter/material.dart';
 /// as a list of Offsets (x and y are normalized 0..1 relative to the video/frame).
 final ValueNotifier<List<Offset>> landmarksNotifier = ValueNotifier<List<Offset>>(<Offset>[]);
 
+/// Simple model holding ML Kit face-level metrics extracted from the last detection.
+class MlFaceMetrics {
+  final double? leftEyeOpenProbability;
+  final double? rightEyeOpenProbability;
+  final double? smilingProbability;
+  final double? headEulerAngleY; // yaw
+  final double? headEulerAngleZ; // roll
+  final int? trackingId;
+  final DateTime timestamp;
+
+  MlFaceMetrics({
+    this.leftEyeOpenProbability,
+    this.rightEyeOpenProbability,
+    this.smilingProbability,
+    this.headEulerAngleY,
+    this.headEulerAngleZ,
+    this.trackingId,
+    DateTime? timestamp,
+  }) : timestamp = timestamp ?? DateTime.now();
+}
+
+final ValueNotifier<MlFaceMetrics?> mlFaceMetricsNotifier = ValueNotifier<MlFaceMetrics?>(null);
+
 /// Helper to convert generic list of maps to Offset list and notify listeners.
 void notifyLandmarksFromMaps(List<Map<String, double>> pts) {
   final out = <Offset>[];

@@ -13,6 +13,7 @@ import '../utils/js_util_stub.dart' if (dart.library.html) '../utils/js_util_web
 
 import '../widgets/eyetracking_overlay.dart';
 import '../utils/js_bridge.dart' as js_bridge;
+import '../utils/landmark_notifier.dart' as ln;
 import 'image_detection_page.dart';
 import '../services/face_detection_service.dart';
 import 'dashboard_page.dart';
@@ -42,14 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _overlayTimer;
   Timer? _serverTimer;
   bool _useBackend = true; // when true, APK will upload periodic JPEGs to backend
-  // realtime metrics from web landmarks
-  int _landmarkCount = 0;
-  double _faceAreaPercent = 0; // 0..100
-  double _attentionPercent = 0;
-  double _drowsinessPercent = 0;
-  int _blinkCount = 0;
-  bool _blinkInProgress = false;
-  final List<double> _earHistory = [];
+  // Metric state removed (metrics UI is hidden). Detection/overlay still active.
 
   @override
   void initState() {
@@ -62,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // listen for JS landmark events
       js_bridge.addLandmarkListener(_onLandmarks);
     }
+    // ML Kit face-level metrics listener removed (metrics UI hidden).
   }
   
   Future<void> _initializeFaceDetection() async {
@@ -202,13 +197,12 @@ class _HomeScreenState extends State<HomeScreen> {
               await _sendDetectionData(detectionData);
             }
             
-            // Update UI with latest detection
-            if (mounted) {
-              setState(() {
-                _landmarkCount = faces.length;
-                // Update other metrics as needed
-              });
-            }
+            // Notify overlay about latest landmarks so the overlay painter updates.
+            final List<Map<String, double>> landmarkMaps = faces.map((face) => {
+              'x': face.dx,
+              'y': face.dy,
+            }).toList();
+            ln.notifyLandmarksFromMaps(landmarkMaps);
           }
         } catch (e) {
           debugPrint('Error in periodic detection: $e');
@@ -255,30 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _buildMetricChip(String label, String value, IconData icon) {
-    return Container(
-      margin: const EdgeInsets.only(left: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.3),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: Colors.white),
-          const SizedBox(width: 4),
-          Text(
-            '$label: $value',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // Metric chips removed — metrics UI is hidden.
 
   Widget _buildRecordButton() {
     return ElevatedButton.icon(
@@ -316,81 +287,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onLandmarks(List<Map<String, double>> pts) {
+    // Publish landmarks to the global notifier so the overlay painter and other
+    // services can consume them. Metrics computation was removed to simplify UI.
     if (pts.isEmpty) {
-      setState(() {
-        _landmarkCount = 0;
-        _faceAreaPercent = 0;
-        _attentionPercent = 0;
-        _drowsinessPercent = 0;
-      });
+      ln.notifyLandmarksFromMaps([]);
       return;
     }
-
-    // compute bounding box in normalized coords
-    double minX = double.infinity, minY = double.infinity, maxX = -double.infinity, maxY = -double.infinity;
-    for (final p in pts) {
-      final x = p['x'] ?? 0.0;
-      final y = p['y'] ?? 0.0;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    final area = (maxX - minX) * (maxY - minY); // normalized
-    final percent = (area * 100).clamp(0.0, 100.0);
-
-    // compute attention: centeredness and size
-    final centroidX = (minX + maxX) / 2.0;
-    final centeredFactor = (1.0 - (2 * (centroidX - 0.5).abs())).clamp(0.0, 1.0);
-    final sizeFactor = area.clamp(0.0, 1.0);
-    final attention = (centeredFactor * 0.6 + sizeFactor * 0.4) * 100.0;
-
-    // compute EAR for eyes if enough landmarks
-    double leftEAR = 0.0, rightEAR = 0.0;
-    final left = [33, 160, 158, 133, 153, 144];
-    final right = [362, 385, 387, 263, 373, 380];
-    bool haveEyes = pts.length > 400; // simple check
-    double dist(int i, int j) {
-      final a = pts[i];
-      final b = pts[j];
-      final dx = (a['x'] ?? 0) - (b['x'] ?? 0);
-      final dy = (a['y'] ?? 0) - (b['y'] ?? 0);
-      return math.sqrt(dx * dx + dy * dy);
-    }
-    if (haveEyes) {
-      try {
-        leftEAR = (dist(left[1], left[5]) + dist(left[2], left[4])) / (2.0 * dist(left[0], left[3]));
-        rightEAR = (dist(right[1], right[5]) + dist(right[2], right[4])) / (2.0 * dist(right[0], right[3]));
-      } catch (_) {
-        leftEAR = 0.0; rightEAR = 0.0;
-      }
-    }
-
-    final currentEar = ((leftEAR + rightEAR) / 2.0);
-    _earHistory.add(currentEar);
-    if (_earHistory.length > 30) _earHistory.removeAt(0);
-    final avgEar = _earHistory.isEmpty ? 0.0 : _earHistory.reduce((a, b) => a + b) / _earHistory.length;
-
-    // drowsiness mapping (lower EAR => more drowsy). map EAR approx [0.15..0.35]
-    final normalized = ((0.28 - avgEar) / 0.13).clamp(0.0, 1.0);
-    final drowsiness = normalized * 100.0;
-
-    // blink detection
-    final blinkThresh = 0.20;
-    if (!_blinkInProgress && avgEar > 0 && avgEar < blinkThresh) {
-      _blinkInProgress = true;
-    }
-    if (_blinkInProgress && avgEar >= blinkThresh) {
-      _blinkInProgress = false;
-      _blinkCount += 1;
-    }
-
-    setState(() {
-      _landmarkCount = pts.length;
-      _faceAreaPercent = double.parse(percent.toStringAsFixed(1));
-      _attentionPercent = double.parse(attention.clamp(0.0, 100.0).toStringAsFixed(1));
-      _drowsinessPercent = double.parse(drowsiness.toStringAsFixed(1));
-    });
+    ln.notifyLandmarksFromMaps(pts);
   }
 
   // (Duplicate short handler removed.) The comprehensive `_onLandmarks` above
@@ -618,423 +521,162 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
+    final mediaQuery = MediaQuery.of(context);
+    final statusBarHeight = mediaQuery.padding.top;
+    
     return Scaffold(
       backgroundColor: const Color(0xFF0F1724),
-      appBar: AppBar(
-        title: const Text('NeuroVision Tracker'),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        actions: [
-          // Status indicator
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            margin: const EdgeInsets.only(right: 8, top: 8, bottom: 8),
-            decoration: BoxDecoration(
-              color: _isRecording ? Colors.red.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                    color: _isRecording ? Colors.red : Colors.grey,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _isRecording 
-                    ? _formatDuration(_recordingDuration)
-                    : 'IDLE',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => SettingsPage(
-                    useBackend: _useBackend,
-                    frameSkip: _frameSkip,
-                  ),
-                ),
-              ).then((_) {
-                // Update local state when returning from settings
-                setState(() {});
-              });
-            },
-          ),
-        ],
-      ),
-      body: Column(
+      body: Stack(
         children: [
-          // Status bar
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-            color: Colors.black.withOpacity(0.5),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  _status,
-                  style: const TextStyle(color: Colors.white),
+          // Main content
+          Column(
+            children: [
+              // Status bar with timer
+              Container(
+                height: statusBarHeight,
+                color: const Color(0xFF0F1724),
+                padding: EdgeInsets.only(top: statusBarHeight > 0 ? 0 : 24), // Fallback for web
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 16.0),
+                    child: Text(
+                      _isRecording 
+                          ? '${_recordingDuration.inMinutes.toString().padLeft(2, '0')}:${(_recordingDuration.inSeconds % 60).toString().padLeft(2, '0')}'
+                          : '',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
                 ),
-                if (_isRecording) ...[
-                  _buildMetricChip(
-                    'Faces',
-                    '$_landmarkCount',
-                    Icons.face,
+              ),
+              // Camera preview area
+              Expanded(
+                child: Container(
+                  margin: EdgeInsets.only(
+                    top: statusBarHeight > 0 ? 12.0 : 28.0, // Increased top margin
+                    left: 16.0,  // Added left margin
+                    right: 16.0, // Added right margin
+                    bottom: 8.0,  // Added bottom margin for balance
                   ),
-                  _buildMetricChip(
-                    'Attention',
-                    '${_attentionPercent.toStringAsFixed(1)}%',
-                    Icons.visibility,
-                  ),
-                  _buildMetricChip(
-                    'Drowsiness',
-                    '${_drowsinessPercent.toStringAsFixed(1)}%',
-                    Icons.nightlight_round,
-                  ),
-                ],
-              ],
-            ),
-          ),
-          // Top half: camera area (mobile camera preview or web placeholder)
-          Expanded(
-            flex: 5,
-            child: Container(
-              color: Colors.transparent,
-              child: ClipRRect(
-                borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(20),
-                    bottomRight: Radius.circular(20)),
-                child: SizedBox.expand(
                   child: kIsWeb
                       ? Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF0B1220),
-                            borderRadius: BorderRadius.circular(18),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.4),
-                                blurRadius: 10,
-                                offset: const Offset(0, 6),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            children: [
-                              Expanded(
-                                child: Stack(
-                                  children: [
-                                    // NOTE: Web video is inserted into the DOM by the JS in `web/index.html`.
-                                    // We show a visual placeholder here — the actual <video> element will be
-                                    // displayed on top of the app when you grant camera permission.
-                                    Positioned.fill(
-                                      child: Padding(
-                                        key: _webPlaceholderKey,
-                                        padding: const EdgeInsets.all(6),
-                                        child: Center(
-                                          child: Text(
-                                            'Web camera will appear here after permission',
-                                            textAlign: TextAlign.center,
-                                            style: TextStyle(color: Colors.white54),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    Positioned(
-                                      top: 12,
-                                      right: 12,
-                                      child: Row(
-                                        children: [
-                                          _Badge(text: 'RECORDING', color: Colors.redAccent),
-                                          const SizedBox(width: 8),
-                                          _Badge(text: 'SYNC', color: Colors.indigoAccent),
-                                        ],
-                                      ),
-                                    ),
-                                    Positioned(
-                                      bottom: 12,
-                                      right: 12,
-                                      child: _Badge(text: 'CV: 21 FPS', color: Colors.purpleAccent),
-                                    )
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
+                          color: Colors.black,
+                          alignment: Alignment.center,
+                          child: const Text('Web camera placeholder', style: TextStyle(color: Colors.white54)),
                         )
                       : (controller != null && controller.value.isInitialized
-                          ? Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                Container(
-                                  margin: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF0B1220),
-                                    borderRadius: BorderRadius.circular(18),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.4),
-                                        blurRadius: 10,
-                                        offset: const Offset(0, 6),
-                                      ),
-                                    ],
-                                  ),
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(18),
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        CameraPreview(controller),
-                                        const EyetrackingOverlay(),
-                                        Positioned(
-                                          top: 12,
-                                          right: 12,
-                                          child: Row(
-                                            children: [
-                                              _Badge(text: 'RECORDING', color: Colors.redAccent),
-                                              const SizedBox(width: 8),
-                                              _Badge(text: 'SYNC', color: Colors.indigoAccent),
-                                            ],
-                                          ),
-                                        ),
-                                        Positioned(
-                                          bottom: 12,
-                                          right: 12,
-                                          child: _Badge(text: 'CV: 21 FPS', color: Colors.purpleAccent),
-                                        )
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            )
+                          ? const CameraPreviewPlaceholder()
                           : Center(
-                              child: _permissionRequested
-                                  ? Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.camera_alt, color: Colors.white54, size: 48),
-                                        const SizedBox(height: 8),
-                                        Text(_status, style: const TextStyle(color: Colors.white)),
-                                        const SizedBox(height: 10),
-                                        ElevatedButton(onPressed: _initCamera, child: const Text('Retry Permission'))
-                                      ],
-                                    )
-                                  : ElevatedButton(onPressed: _initCamera, child: const Text('Request Camera Permission')),
+                              child: ElevatedButton(
+                                onPressed: _initCamera,
+                                child: const Text('Request Camera Permission'),
+                              ),
                             )),
                 ),
               ),
-            ),
+            ],
           ),
-
-          // Bottom half: metrics and controls (colorful)
-          Expanded(
-            flex: 5,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-              decoration: const BoxDecoration(
-                color: Color(0xFF071226),
-                borderRadius: BorderRadius.only(topLeft: Radius.circular(24), topRight: Radius.circular(24)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text('Live Analytics', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white), overflow: TextOverflow.ellipsis),
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          _streaming ? 'L: $_landmarkCount  00:12' : '00:00',
-                          style: const TextStyle(color: Colors.white54),
-                          textAlign: TextAlign.right,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
+        ],
+      ),
+      // Bottom controls (kept as-is; metrics removed per user request)
+      bottomNavigationBar: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        decoration: const BoxDecoration(
+          color: Color(0xFF071226),
+          borderRadius: BorderRadius.only(topLeft: Radius.circular(24), topRight: Radius.circular(24)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                _buildRecordButton(),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _onRecordPressed,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
+                    child: Text(_streaming ? 'Stop Recording' : 'Record', style: const TextStyle(fontSize: 16)),
                   ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 110,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 8),
+            // bottom navigation mimic
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                const _BottomNavItem(icon: Icons.monitor_heart, label: 'Monitor', active: true),
+
+                // Dashboard navigation
+                InkWell(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage())),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(width: 8),
-                          _AnalyticsCard(title: 'Attention', percent: _attentionPercent.toInt(), color: Colors.deepOrange),
-                        SizedBox(width: 12),
-                        _AnalyticsCard(title: 'Drowsiness', percent: _drowsinessPercent.toInt(), color: Colors.amber),
-                        SizedBox(width: 12),
-                        _AnalyticsCard(title: 'Facial', percent: _faceAreaPercent.toInt(), color: Colors.cyan),
-                        SizedBox(width: 8),
+                        Icon(Icons.dashboard, color: Colors.white54),
+                        SizedBox(height: 6),
+                        Text('Dashboard', style: TextStyle(color: Colors.white54, fontSize: 12)),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      _buildRecordButton(),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: _onRecordPressed,
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
-                          child: Text(_streaming ? 'Stop Recording' : 'Record', style: const TextStyle(fontSize: 16)),
-                        ),
-                      ),
-                    ],
+                ),
+
+                InkWell(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImageDetectionPage())),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.image, color: Colors.white54),
+                        SizedBox(height: 6),
+                        Text('Image', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  const Divider(color: Colors.white12),
-                  const SizedBox(height: 8),
-                  // bottom navigation mimic
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      const _BottomNavItem(icon: Icons.monitor_heart, label: 'Monitor', active: true),
+                ),
 
-                      // Dashboard navigation
-                      InkWell(
-                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage())),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.dashboard, color: Colors.white54),
-                              SizedBox(height: 6),
-                              Text('Dashboard', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      InkWell(
-                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ImageDetectionPage())),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.image, color: Colors.white54),
-                              SizedBox(height: 6),
-                              Text('Image', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      // Settings navigation (await settings changes)
-                      InkWell(
-                        onTap: () async {
-                          final result = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(useBackend: _useBackend, frameSkip: _frameSkip)));
-                          if (result is Map<String, dynamic>) {
-                            setState(() {
-                              if (result.containsKey('useBackend')) _useBackend = result['useBackend'] as bool;
-                              if (result.containsKey('frameSkip')) _frameSkip = result['frameSkip'] as int;
-                              // Backend URL is now handled through ApiService
-                            });
-                          }
-                        },
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.settings, color: Colors.white54),
-                              SizedBox(height: 6),
-                              Text('Settings', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                ],
-              ),
-            ),
-          ),
-        ],
+                // Settings navigation (await settings changes)
+                InkWell(
+                  onTap: () async {
+                    final result = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(useBackend: _useBackend, frameSkip: _frameSkip)));
+                    if (result is Map<String, dynamic>) {
+                      setState(() {
+                        if (result.containsKey('useBackend')) _useBackend = result['useBackend'] as bool;
+                        if (result.containsKey('frameSkip')) _frameSkip = result['frameSkip'] as int;
+                      });
+                    }
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.settings, color: Colors.white54),
+                        SizedBox(height: 6),
+                        Text('Settings', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            )
+          ],
+        ),
       ),
     );
   }
 
-  String _formatDuration(Duration d) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = twoDigits(d.inHours.remainder(24));
-    final minutes = twoDigits(d.inMinutes.remainder(60));
-    final seconds = twoDigits(d.inSeconds.remainder(60));
-    return '$hours:$minutes:$seconds';
-  }
-}
-
-class _Badge extends StatelessWidget {
-  final String text;
-  final Color color;
-  const _Badge({Key? key, required this.text, required this.color}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 6)],
-      ),
-      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-    );
-  }
-}
-
-class _AnalyticsCard extends StatelessWidget {
-  final String title;
-  final int percent;
-  final Color color;
-  const _AnalyticsCard({Key? key, required this.title, required this.percent, required this.color}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 160,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F2130),
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 8)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(title, style: const TextStyle(color: Colors.white70)),
-              Text('$percent%', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: Center(
-              child: Icon(Icons.insights, size: 36, color: color.withOpacity(0.9)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _BottomNavItem extends StatelessWidget {
@@ -1053,5 +695,29 @@ class _BottomNavItem extends StatelessWidget {
         Text(label, style: TextStyle(color: active ? Colors.white : Colors.white54, fontSize: 12)),
       ],
     );
+  }
+}
+
+// Lightweight private widget that builds the actual CameraPreview + overlay.
+// Kept separate so we can use a const placeholder above and still render the
+// real preview with the runtime controller below using an InheritedBuilder.
+class CameraPreviewPlaceholder extends StatelessWidget {
+  const CameraPreviewPlaceholder({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    // Find the HomeScreen state via ancestor; this is acceptable for this simple app.
+    final state = context.findAncestorStateOfType<_HomeScreenState>();
+    final controller = state?._controller;
+    if (controller != null && controller.value.isInitialized) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraPreview(controller),
+          const EyetrackingOverlay(),
+        ],
+      );
+    }
+    return const SizedBox.shrink();
   }
 }

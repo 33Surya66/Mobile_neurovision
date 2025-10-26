@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import '../utils/landmark_notifier.dart';
 import 'face_painter.dart';
 import '../services/metrics_service.dart';
+import '../utils/landmark_notifier.dart' as ln;
 
 class EyetrackingOverlay extends StatelessWidget {
   const EyetrackingOverlay({Key? key}) : super(key: key);
@@ -10,7 +10,7 @@ class EyetrackingOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return IgnorePointer(
       child: ValueListenableBuilder<List<Offset>>(
-        valueListenable: landmarksNotifier,
+        valueListenable: ln.landmarksNotifier,
         builder: (context, landmarks, _) {
           // update metrics service
           MetricsService.processLandmarks(landmarks);

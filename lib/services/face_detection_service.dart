@@ -473,6 +473,19 @@ class FaceDetectionService {
         }
       }
     }
+
+    // Publish ML Kit face-level metrics for the first face
+    try {
+      final fm = ln.MlFaceMetrics(
+        leftEyeOpenProbability: face.leftEyeOpenProbability,
+        rightEyeOpenProbability: face.rightEyeOpenProbability,
+        smilingProbability: face.smilingProbability,
+        headEulerAngleY: face.headEulerAngleY,
+        headEulerAngleZ: face.headEulerAngleZ,
+        trackingId: face.trackingId,
+      );
+      ln.mlFaceMetricsNotifier.value = fm;
+    } catch (_) {}
     
     return landmarks;
   }
