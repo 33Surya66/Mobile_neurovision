@@ -351,6 +351,26 @@ def end_session(session_id):
         return response
     
     try:
+        # If session not in memory (e.g., server restart or different worker),
+        # try to hydrate from MongoDB so clients can still end sessions.
+        if session_id not in sessions:
+            try:
+                sc = sessions_collection if sessions_collection is not None else (mongo_db.get_collection('sessions') if mongo_db is not None else None)
+                if sc is not None:
+                    doc = sc.find_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]})
+                    if doc:
+                        sessions[session_id] = {
+                            'session_id': session_id,
+                            'start_time': doc.get('start_time'),
+                            'end_time': doc.get('end_time'),
+                            'status': doc.get('status', 'active'),
+                            'metadata': doc.get('metadata', {}),
+                            'frames_processed': doc.get('frames_processed', 0),
+                            'detections': doc.get('detections', []),
+                        }
+            except Exception:
+                pass
+
         if session_id not in sessions:
             response = jsonify({'error': 'Session not found'})
             response.headers.add('Access-Control-Allow-Origin', '*')
