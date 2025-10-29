@@ -225,7 +225,7 @@ def post_session_metrics(session_id):
 
         # Attach timestamp and source
         metrics_doc = {
-            'session_id': session_id,
+            'sessionId': session_id,
             'timestamp': datetime.now(timezone.utc),
             'source': request.remote_addr,
             'metrics': data,
@@ -241,13 +241,15 @@ def post_session_metrics(session_id):
                 to_insert = dict(metrics_doc)
                 col.insert_one(to_insert)
 
-            # Also push to the session document for quick aggregation (best-effort)
+            # Also push to the session document for quick aggregation (best-effort).
+            # Use an upsert that ensures 'sessionId' is set so a unique index on
+            # sessionId won't see null values.
             if sessions_collection is not None:
                 sc = sessions_collection
             else:
                 sc = mongo_db.get_collection('sessions') if mongo_db is not None else None
             if sc is not None:
-                sc.update_one({'_id': session_id}, {'$set': {'last_activity': metrics_doc['timestamp']}, '$push': {'metrics': metrics_doc}}, upsert=True)
+                sc.update_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]}, {'$set': {'last_activity': metrics_doc['timestamp'], 'sessionId': session_id}, '$push': {'metrics': metrics_doc}}, upsert=True)
         except Exception as e:
             app.logger.warning(f'Failed to persist metrics: {e}')
 
@@ -284,14 +286,17 @@ def start_session():
             return jsonify({'error': 'Invalid JSON'}), 400
             
         session_id = str(uuid.uuid4())
-        
+
         # Ensure metadata is a dictionary
         metadata = data.get('metadata', {})
         if not isinstance(metadata, dict):
             metadata = {}
-        
+
+        # Use a canonical field name that matches possible DB indexes (sessionId)
+        # and also set the document _id to the session_id string so queries are fast.
         session_data = {
-            'session_id': session_id,
+            '_id': session_id,
+            'sessionId': session_id,
             'start_time': datetime.now(timezone.utc),
             'end_time': None,
             'status': 'active',
@@ -299,17 +304,19 @@ def start_session():
             'frames_processed': 0,
             'detections': []
         }
-        
+
         sessions[session_id] = session_data
-        
-        # persist session document (best-effort)
+
+        # persist session document (best-effort) -- ensure we set sessionId so a
+        # unique index on sessionId won't see a null value.
         try:
             if sessions_collection is not None:
                 col = sessions_collection
             else:
                 col = mongo_db.get_collection('sessions') if mongo_db is not None else None
             if col is not None:
-                col.update_one({'_id': session_id}, {'$set': session_data}, upsert=True)
+                # Upsert using either _id or sessionId to be robust to existing index
+                col.update_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]}, {'$set': session_data}, upsert=True)
         except Exception as e:
             app.logger.error(f'Failed to save session to MongoDB: {e}')
         
@@ -360,8 +367,9 @@ def end_session(session_id):
                 col = sessions_collection
             else:
                 col = mongo_db.get_collection('sessions') if mongo_db is not None else None
-            if col is not None:
-                col.update_one({'_id': session_id}, {'$set': {'end_time': end_time, 'status': 'completed'}})
+                if col is not None:
+                    # Update by either _id or sessionId; ensure sessionId is set
+                    col.update_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]}, {'$set': {'end_time': end_time, 'status': 'completed', 'sessionId': session_id}}, upsert=False)
         except Exception as e:
             app.logger.error(f'Failed to update session in MongoDB: {e}')
         
@@ -397,9 +405,10 @@ def detect_with_session(session_id):
         if session_id not in sessions:
             # Try to hydrate session from MongoDB if available
             try:
-                sc = sessions_collection if sessions_collection is not None else (mongo_db.get_collection('sessions') if mongo_db is not None else None)
-                if sc is not None:
-                    doc = sc.find_one({'_id': session_id})
+                    sc = sessions_collection if sessions_collection is not None else (mongo_db.get_collection('sessions') if mongo_db is not None else None)
+                    if sc is not None:
+                        # Search by either the document _id or the indexed 'sessionId' field.
+                        doc = sc.find_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]})
                     if doc:
                         # Normalize into in-memory session structure
                         sessions[session_id] = {
@@ -447,7 +456,8 @@ def detect_with_session(session_id):
                     else:
                         col = mongo_db.get_collection('detections') if mongo_db is not None else None
                     if col is not None:
-                        col.insert_one({'session_id': session_id, **detection_data})
+                        # Use 'sessionId' to be consistent with session documents/indexes
+                        col.insert_one({'sessionId': session_id, **detection_data})
                 except Exception as e:
                     app.logger.error(f'Failed to save detection to MongoDB: {e}')
 
