@@ -101,7 +101,13 @@ def _process_image_bytes(img_bytes, remote_addr=None):
 
     # Persist to MongoDB if configured (best-effort)
     try:
-        col = detections_collection or mongo_collection or (mongo_db.get_collection('detections') if mongo_db else None)
+        # Avoid truth-testing Collection objects (they raise TypeError).
+        if detections_collection is not None:
+            col = detections_collection
+        elif mongo_collection is not None:
+            col = mongo_collection
+        else:
+            col = mongo_db.get_collection('detections') if mongo_db is not None else None
         if col is not None:
             doc = {
                 '_id': ObjectId(),
@@ -227,7 +233,10 @@ def post_session_metrics(session_id):
 
         # Persist metrics (best-effort)
         try:
-            col = metrics_collection or (mongo_db.get_collection('metrics') if mongo_db else None)
+            if metrics_collection is not None:
+                col = metrics_collection
+            else:
+                col = mongo_db.get_collection('metrics') if mongo_db is not None else None
             if col is not None:
                 to_insert = dict(metrics_doc)
                 col.insert_one(to_insert)
@@ -292,7 +301,10 @@ def start_session():
         
         # persist session document (best-effort)
         try:
-            col = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if sessions_collection is not None:
+                col = sessions_collection
+            else:
+                col = mongo_db.get_collection('sessions') if mongo_db is not None else None
             if col is not None:
                 col.update_one({'_id': session_id}, {'$set': session_data}, upsert=True)
         except Exception as e:
@@ -341,7 +353,10 @@ def end_session(session_id):
         })
         
         try:
-            col = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if sessions_collection is not None:
+                col = sessions_collection
+            else:
+                col = mongo_db.get_collection('sessions') if mongo_db is not None else None
             if col is not None:
                 col.update_one({'_id': session_id}, {'$set': {'end_time': end_time, 'status': 'completed'}})
         except Exception as e:
@@ -377,6 +392,26 @@ def detect_with_session(session_id):
     
     try:
         if session_id not in sessions:
+            # Try to hydrate session from MongoDB if available
+            try:
+                sc = sessions_collection if sessions_collection is not None else (mongo_db.get_collection('sessions') if mongo_db is not None else None)
+                if sc is not None:
+                    doc = sc.find_one({'_id': session_id})
+                    if doc:
+                        # Normalize into in-memory session structure
+                        sessions[session_id] = {
+                            'session_id': session_id,
+                            'start_time': doc.get('start_time'),
+                            'end_time': doc.get('end_time'),
+                            'status': doc.get('status', 'active'),
+                            'metadata': doc.get('metadata', {}),
+                            'frames_processed': doc.get('frames_processed', 0),
+                            'detections': doc.get('detections', [])
+                        }
+            except Exception:
+                pass
+
+        if session_id not in sessions:
             response = jsonify({'error': 'Session not found or expired'})
             response.headers.add('Access-Control-Allow-Origin', '*')
             return response, 404
@@ -404,7 +439,10 @@ def detect_with_session(session_id):
                 sessions[session_id]['frames_processed'] = len(sessions[session_id]['detections'])
 
                 try:
-                    col = detections_collection or (mongo_db.get_collection('detections') if mongo_db else None)
+                    if detections_collection is not None:
+                        col = detections_collection
+                    else:
+                        col = mongo_db.get_collection('detections') if mongo_db is not None else None
                     if col is not None:
                         col.insert_one({'session_id': session_id, **detection_data})
                 except Exception as e:
