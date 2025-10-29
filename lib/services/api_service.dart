@@ -215,6 +215,24 @@ class ApiService {
     }
   }
 
+  // Post metrics for the current session
+  static Future<bool> postMetrics(Map<String, dynamic> metrics) async {
+    if (_sessionId == null) return false;
+    try {
+      final uri = Uri.parse('$_baseUrl/sessions/$_sessionId/metrics');
+      final response = await http.post(uri, headers: _headers, body: jsonEncode(metrics));
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return true;
+      } else {
+        debugPrint('Failed to post metrics (${response.statusCode}): ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('Error posting metrics: $e');
+      return false;
+    }
+  }
+
   // Generate or retrieve a unique device ID
   static Future<String> _getDeviceId() async {
     try {

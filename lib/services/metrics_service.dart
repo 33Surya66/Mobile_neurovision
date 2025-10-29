@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../utils/landmark_notifier.dart' as ln;
+import 'api_service.dart';
 
 class FaceMetrics {
   final int landmarkCount;
@@ -197,6 +198,11 @@ class MetricsService {
       facialSymmetry: facialSymmetry,
     );
 
+    // Send metrics to backend (non-blocking)
+    try {
+      _maybeSendMetrics(metricsNotifier.value);
+    } catch (_) {}
+
     // Update rolling histories for sparklines
     _updateHistories(cognitiveLoad, gazeStability, blinkRate);
 
@@ -212,6 +218,22 @@ class MetricsService {
     attentionSeriesNotifier.value = List<double>.from(_attentionHistory);
     drowsinessSeriesNotifier.value = List<double>.from(_drowsinessHistory);
     blinkSeriesNotifier.value = List<double>.from(_blinkHistory);
+  }
+
+  static void _maybeSendMetrics(FaceMetrics m) {
+    // Build a concise metrics payload (six dashboard metrics)
+    final payload = {
+      'landmarkCount': m.landmarkCount,
+      'faceAreaPercent': m.faceAreaPercent,
+      'attentionPercent': m.attentionPercent,
+      'drowsinessPercent': m.drowsinessPercent,
+      'ear': m.ear,
+      'blinkCount': m.blinkCount,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+
+    // Fire-and-forget; ApiService handles session checks
+    ApiService.postMetrics(payload).then((ok) {}).catchError((_) {});
   }
 
   static double _calculateDrowsiness(double ear) {

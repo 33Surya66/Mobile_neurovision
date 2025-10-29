@@ -47,17 +47,94 @@ mp_face_mesh = mp.solutions.face_mesh
 # Use static_image_mode=True for single-image inference (no tracking)
 face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5)
 
+
+def _extract_image_bytes_from_request():
+    """Return (img_bytes, None) on success or (None, (body_dict, status)) on error."""
+    if 'image' in request.files:
+        f = request.files['image']
+        return f.read(), None
+
+    if not request.is_json:
+        return None, ({'error': 'Request must be JSON when not using form-data'}, 400)
+
+    data = request.get_json()
+    if not data:
+        return None, ({'error': 'No data provided'}, 400)
+
+    data_url = data.get('dataUrl') or data.get('dataurl')
+    if data_url:
+        try:
+            _, _, b64 = data_url.partition(',')
+            return base64.b64decode(b64), None
+        except Exception:
+            return None, ({'error': 'invalid image data'}, 400)
+
+    return None, ({'error': 'no image provided'}, 400)
+
+
+def _process_image_bytes(img_bytes, remote_addr=None):
+    """Run MediaPipe on image bytes and persist best-effort. Returns (body_dict, status).
+
+    This is pure logic (no Flask response objects) so it can be called from multiple endpoints.
+    """
+    try:
+        image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+    except Exception as e:
+        return {'error': f'invalid image: {e}'}, 400
+
+    width, height = image.size
+    img_np = np.array(image)
+
+    results = face_mesh.process(img_np)
+    if not results or not getattr(results, 'multi_face_landmarks', None):
+        return {'landmarks': None, 'message': 'no_face'}, 200
+
+    lm = results.multi_face_landmarks[0]
+    flat = []
+    for p in lm.landmark:
+        x = max(0.0, min(1.0, p.x))
+        y = max(0.0, min(1.0, p.y))
+        flat.append(x)
+        flat.append(y)
+
+    resp = {'landmarks': flat, 'width': width, 'height': height}
+
+    # Persist to MongoDB if configured (best-effort)
+    try:
+        col = detections_collection or mongo_collection or (mongo_db.get_collection('detections') if mongo_db else None)
+        if col is not None:
+            doc = {
+                '_id': ObjectId(),
+                'timestamp': datetime.now(timezone.utc),
+                'landmarks': flat,
+                'width': width,
+                'height': height,
+                'source': remote_addr,
+            }
+            col.insert_one(doc)
+    except Exception as e:
+        app.logger.warning(f'Failed to persist detection: {e}')
+
+    return resp, 200
+
 # Initialize MongoDB client if MONGO_URI is provided
 mongo_client = None
 mongo_db = None
 mongo_collection = None
+sessions_collection = None
+detections_collection = None
+metrics_collection = None
 MONGO_URI = os.environ.get('MONGO_URI')
 if MONGO_URI and MongoClient:
     try:
         mongo_client = MongoClient(MONGO_URI)
         # database and collection names are configurable via env or default
         mongo_db = mongo_client.get_database(os.environ.get('MONGO_DB', 'neurovision'))
+        # default collection names
         mongo_collection = mongo_db.get_collection(os.environ.get('MONGO_COLLECTION', 'detections'))
+        sessions_collection = mongo_db.get_collection(os.environ.get('MONGO_SESSIONS_COLLECTION', 'sessions'))
+        detections_collection = mongo_db.get_collection(os.environ.get('MONGO_DETECTIONS_COLLECTION', 'detections'))
+        metrics_collection = mongo_db.get_collection(os.environ.get('MONGO_METRICS_COLLECTION', 'metrics'))
         app.logger.info('MongoDB connected')
     except Exception as e:
         app.logger.warning(f'Could not connect to MongoDB: {e}')
@@ -97,69 +174,79 @@ def detect():
                 return response, 401
 
         # Accept multipart/form-data file or JSON {dataUrl: 'data:...'}
-        img_bytes = None
-        if 'image' in request.files:
-            f = request.files['image']
-            img_bytes = f.read()
-        else:
-            if not request.is_json:
-                response = jsonify({'error': 'Request must be JSON when not using form-data'})
-                response.headers.add('Access-Control-Allow-Origin', '*')
-                return response, 400
-                
-            data = request.get_json()
-            if not data:
-                response = jsonify({'error': 'No data provided'})
-                response.headers.add('Access-Control-Allow-Origin', '*')
-                return response, 400
-                
-            data_url = data.get('dataUrl') or data.get('dataurl')
-            if data_url:
-                # strip header
-                header, _, b64 = data_url.partition(',')
-                img_bytes = base64.b64decode(b64)
+        img_bytes, err = _extract_image_bytes_from_request()
+        if err is not None:
+            err_body, err_status = err
+            response = jsonify(err_body)
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, err_status
 
-        if not img_bytes:
-            return jsonify({'error': 'no image provided'}), 400
+        resp_body, resp_status = _process_image_bytes(img_bytes, request.remote_addr)
+        response = jsonify(resp_body)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, resp_status
 
-        image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        width, height = image.size
-        img_np = np.array(image)
 
-        # MediaPipe expects RGB images
-        results = face_mesh.process(img_np)
-        if not results.multi_face_landmarks:
-            resp = {'landmarks': None, 'message': 'no_face'}
-            return jsonify(resp), 200
-
-        lm = results.multi_face_landmarks[0]
-        flat = []
-        for p in lm.landmark:
-            # normalized coords [0..1] - ensure they're within bounds
-            x = max(0.0, min(1.0, p.x))
-            y = max(0.0, min(1.0, p.y))
-            flat.append(x)
-            flat.append(y)
-
-        resp = {'landmarks': flat, 'width': width, 'height': height}
-
-        # Persist to MongoDB if configured (best-effort, non-blocking for client)
-        if mongo_collection:
-            try:
-                doc = {
-                    'timestamp': datetime.utcnow(),
-                    'landmarks': flat,
-                    'width': width,
-                    'height': height,
-                    'source': request.remote_addr
-                }
-                mongo_collection.insert_one(doc)
-            except Exception as e:
-                app.logger.warning(f'Failed to persist detection: {e}')
-
-        return jsonify(resp), 200
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sessions/<session_id>/metrics', methods=['POST', 'OPTIONS'])
+def post_session_metrics(session_id):
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'preflight'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+
+    try:
+        # Validate session exists in memory or allow creation if not
+        if session_id not in sessions:
+            # If we don't have in-memory session, still allow metrics if sessions_collection has it
+            if sessions_collection is None:
+                response = jsonify({'error': 'Session not found'})
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                return response, 404
+
+        if not request.is_json:
+            response = jsonify({'error': 'Request must be JSON'})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 400
+
+        data = request.get_json() or {}
+
+        # Attach timestamp and source
+        metrics_doc = {
+            'session_id': session_id,
+            'timestamp': datetime.now(timezone.utc),
+            'source': request.remote_addr,
+            'metrics': data,
+        }
+
+        # Persist metrics (best-effort)
+        try:
+            col = metrics_collection or (mongo_db.get_collection('metrics') if mongo_db else None)
+            if col is not None:
+                to_insert = dict(metrics_doc)
+                col.insert_one(to_insert)
+
+            # Also push to the session document for quick aggregation (best-effort)
+            sc = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if sc is not None:
+                sc.update_one({'_id': session_id}, {'$set': {'last_activity': metrics_doc['timestamp']}, '$push': {'metrics': metrics_doc}}, upsert=True)
+        except Exception as e:
+            app.logger.warning(f'Failed to persist metrics: {e}')
+
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 201
+    except Exception as e:
+        app.logger.error(f'Error in post_session_metrics: {str(e)}', exc_info=True)
+        response = jsonify({'error': 'Internal server error', 'details': str(e)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 500
 
 
 # Session management
@@ -203,15 +290,13 @@ def start_session():
         
         sessions[session_id] = session_data
         
-        if mongo_collection is not None:
-            try:
-                mongo_collection.sessions.update_one(
-                    {'_id': session_id},
-                    {'$set': session_data},
-                    upsert=True
-                )
-            except Exception as e:
-                app.logger.error(f'Failed to save session to MongoDB: {e}')
+        # persist session document (best-effort)
+        try:
+            col = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if col is not None:
+                col.update_one({'_id': session_id}, {'$set': session_data}, upsert=True)
+        except Exception as e:
+            app.logger.error(f'Failed to save session to MongoDB: {e}')
         
         response = jsonify({
             'session_id': session_id,
@@ -255,17 +340,12 @@ def end_session(session_id):
             'status': 'completed'
         })
         
-        if mongo_collection is not None:
-            try:
-                mongo_collection.sessions.update_one(
-                    {'_id': session_id},
-                    {'$set': {
-                        'end_time': end_time,
-                        'status': 'completed'
-                    }}
-                )
-            except Exception as e:
-                app.logger.error(f'Failed to update session in MongoDB: {e}')
+        try:
+            col = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if col is not None:
+                col.update_one({'_id': session_id}, {'$set': {'end_time': end_time, 'status': 'completed'}})
+        except Exception as e:
+            app.logger.error(f'Failed to update session in MongoDB: {e}')
         
         response = jsonify({
             'session_id': session_id,
@@ -301,39 +381,44 @@ def detect_with_session(session_id):
             response.headers.add('Access-Control-Allow-Origin', '*')
             return response, 404
         
-        # Process the detection
-        response = detect()
-        
+        # Extract image bytes from request
+        img_bytes, err = _extract_image_bytes_from_request()
+        if err is not None:
+            err_body, err_status = err
+            response = jsonify(err_body)
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, err_status
+
+        resp_body, resp_status = _process_image_bytes(img_bytes, request.remote_addr)
+
         # If detection was successful, log it to the session
-        if response[1] == 200:
+        if resp_status == 200:
             try:
                 detection_data = {
                     'timestamp': datetime.now(timezone.utc),
-                    'data': response[0].get_json(),
+                    'data': resp_body,
                     'source': request.remote_addr
                 }
-                
+
                 sessions[session_id]['detections'].append(detection_data)
                 sessions[session_id]['frames_processed'] = len(sessions[session_id]['detections'])
-                
-                if mongo_collection is not None:
-                    try:
-                        mongo_collection.detections.insert_one({
-                            'session_id': session_id,
-                            **detection_data
-                        })
-                    except Exception as e:
-                        app.logger.error(f'Failed to save detection to MongoDB: {e}')
-                
+
+                try:
+                    col = detections_collection or (mongo_db.get_collection('detections') if mongo_db else None)
+                    if col is not None:
+                        col.insert_one({'session_id': session_id, **detection_data})
+                except Exception as e:
+                    app.logger.error(f'Failed to save detection to MongoDB: {e}')
+
                 # Update session in memory
                 sessions[session_id]['last_activity'] = detection_data['timestamp']
-                
+
             except Exception as e:
                 app.logger.error(f'Error processing detection data: {str(e)}', exc_info=True)
-        
-        # Add CORS headers to the response
-        response[0].headers.add('Access-Control-Allow-Origin', '*')
-        return response[0], response[1]
+
+        response = jsonify(resp_body)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, resp_status
         
     except Exception as e:
         app.logger.error(f'Error in detect_with_session: {str(e)}', exc_info=True)
