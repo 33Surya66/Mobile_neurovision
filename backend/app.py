@@ -242,7 +242,10 @@ def post_session_metrics(session_id):
                 col.insert_one(to_insert)
 
             # Also push to the session document for quick aggregation (best-effort)
-            sc = sessions_collection or (mongo_db.get_collection('sessions') if mongo_db else None)
+            if sessions_collection is not None:
+                sc = sessions_collection
+            else:
+                sc = mongo_db.get_collection('sessions') if mongo_db is not None else None
             if sc is not None:
                 sc.update_one({'_id': session_id}, {'$set': {'last_activity': metrics_doc['timestamp']}, '$push': {'metrics': metrics_doc}}, upsert=True)
         except Exception as e:
