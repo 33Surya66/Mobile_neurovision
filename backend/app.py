@@ -47,9 +47,37 @@ mp_face_mesh = mp.solutions.face_mesh
 # Use static_image_mode=True for single-image inference (no tracking)
 face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5)
 
+# Optional MongoDB initialization
+MONGO_URI = os.environ.get('MONGO_URI')
+REQUIRE_MONGO = os.environ.get('REQUIRE_MONGO', 'false').lower() == 'true'
+
+mongo_client = None
+mongo_db = None
+sessions_collection = None
+metrics_collection = None
+detections_collection = None
+
+if MongoClient is not None and MONGO_URI:
+    try:
+        mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db_name = os.environ.get('MONGO_DB', 'neurovision')
+        mongo_db = mongo_client[db_name]
+        # Pre-create handles for common collections; they may be None in tests
+        sessions_collection = mongo_db.get_collection('sessions')
+        metrics_collection = mongo_db.get_collection('metrics')
+        detections_collection = mongo_db.get_collection('detections')
+    except Exception as e:
+        app.logger.error(f'Failed to initialize MongoDB client: {e}', exc_info=True)
+        mongo_client = None
+        mongo_db = None
+        sessions_collection = None
+        metrics_collection = None
+        detections_collection = None
+
 
 def _extract_image_bytes_from_request():
     """Return (img_bytes, None) on success or (None, (body_dict, status)) on error."""
+    # Accept multipart/form-data file or JSON {dataUrl: 'data:...'}
     if 'image' in request.files:
         f = request.files['image']
         return f.read(), None
@@ -57,145 +85,27 @@ def _extract_image_bytes_from_request():
     if not request.is_json:
         return None, ({'error': 'Request must be JSON when not using form-data'}, 400)
 
-    data = request.get_json()
-    if not data:
-        return None, ({'error': 'No data provided'}, 400)
+    data = request.get_json() or {}
+    # support several names for base64 image payload
+    data_url = data.get('dataUrl') or data.get('dataurl') or data.get('imageBase64') or data.get('image_base64')
+    if not data_url:
+        return None, ({'error': 'No image provided'}, 400)
 
-    data_url = data.get('dataUrl') or data.get('dataurl')
-    if data_url:
+    # If data_url is a data: URI, strip header
+    if isinstance(data_url, str) and data_url.startswith('data:'):
         try:
-            _, _, b64 = data_url.partition(',')
-            return base64.b64decode(b64), None
+            _, b64 = data_url.split(',', 1)
         except Exception:
-            return None, ({'error': 'invalid image data'}, 400)
+            return None, ({'error': 'Invalid data URL'}, 400)
+    else:
+        b64 = data_url
 
-    return None, ({'error': 'no image provided'}, 400)
-
-
-def _process_image_bytes(img_bytes, remote_addr=None):
-    """Run MediaPipe on image bytes and persist best-effort. Returns (body_dict, status).
-
-    This is pure logic (no Flask response objects) so it can be called from multiple endpoints.
-    """
     try:
-        image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    except Exception as e:
-        return {'error': f'invalid image: {e}'}, 400
+        img_bytes = base64.b64decode(b64)
+    except Exception:
+        return None, ({'error': 'Failed to decode image data'}, 400)
 
-    width, height = image.size
-    img_np = np.array(image)
-
-    results = face_mesh.process(img_np)
-    if not results or not getattr(results, 'multi_face_landmarks', None):
-        return {'landmarks': None, 'message': 'no_face'}, 200
-
-    lm = results.multi_face_landmarks[0]
-    flat = []
-    for p in lm.landmark:
-        x = max(0.0, min(1.0, p.x))
-        y = max(0.0, min(1.0, p.y))
-        flat.append(x)
-        flat.append(y)
-
-    resp = {'landmarks': flat, 'width': width, 'height': height}
-
-    # Persist to MongoDB if configured (best-effort)
-    try:
-        # Avoid truth-testing Collection objects (they raise TypeError).
-        if detections_collection is not None:
-            col = detections_collection
-        elif mongo_collection is not None:
-            col = mongo_collection
-        else:
-            col = mongo_db.get_collection('detections') if mongo_db is not None else None
-        if col is not None:
-            doc = {
-                '_id': ObjectId(),
-                'timestamp': datetime.now(timezone.utc),
-                'landmarks': flat,
-                'width': width,
-                'height': height,
-                'source': remote_addr,
-            }
-            col.insert_one(doc)
-    except Exception as e:
-        app.logger.warning(f'Failed to persist detection: {e}')
-
-    return resp, 200
-
-# Initialize MongoDB client if MONGO_URI is provided
-mongo_client = None
-mongo_db = None
-mongo_collection = None
-sessions_collection = None
-detections_collection = None
-metrics_collection = None
-MONGO_URI = os.environ.get('MONGO_URI')
-if MONGO_URI and MongoClient:
-    try:
-        mongo_client = MongoClient(MONGO_URI)
-        # database and collection names are configurable via env or default
-        mongo_db = mongo_client.get_database(os.environ.get('MONGO_DB', 'neurovision'))
-        # default collection names
-        mongo_collection = mongo_db.get_collection(os.environ.get('MONGO_COLLECTION', 'detections'))
-        sessions_collection = mongo_db.get_collection(os.environ.get('MONGO_SESSIONS_COLLECTION', 'sessions'))
-        detections_collection = mongo_db.get_collection(os.environ.get('MONGO_DETECTIONS_COLLECTION', 'detections'))
-        metrics_collection = mongo_db.get_collection(os.environ.get('MONGO_METRICS_COLLECTION', 'metrics'))
-        app.logger.info('MongoDB connected')
-    except Exception as e:
-        app.logger.warning(f'Could not connect to MongoDB: {e}')
-
-# If the operator requires MongoDB for this deployment, allow failing fast.
-REQUIRE_MONGO = os.environ.get('REQUIRE_MONGO', 'false').lower() == 'true'
-if REQUIRE_MONGO and not mongo_client:
-    app.logger.error('REQUIRE_MONGO is true but MongoDB connection is not available. Exiting.')
-    sys.exit(1)
-
-# Optional API key to protect /detect during development/production. If not set,
-# the endpoint is publicly callable (subject to network rules).
-DETECTION_API_KEY = os.environ.get('DETECTION_API_KEY')
-
-
-@app.route('/api/detect', methods=['POST', 'OPTIONS'])
-def detect():
-    if request.method == 'OPTIONS':
-        # Handle preflight request
-        response = jsonify({'status': 'preflight'})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        return response
-        
-    try:
-        # Enforce API key if configured
-        if DETECTION_API_KEY:
-            auth = request.headers.get('Authorization', '')
-            token = None
-            if auth.lower().startswith('bearer '):
-                token = auth.split(None, 1)[1].strip()
-            token = token or request.headers.get('x-api-key') or request.args.get('api_key')
-            if token != DETECTION_API_KEY:
-                response = jsonify({'error': 'unauthorized'})
-                response.headers.add('Access-Control-Allow-Origin', '*')
-                return response, 401
-
-        # Accept multipart/form-data file or JSON {dataUrl: 'data:...'}
-        img_bytes, err = _extract_image_bytes_from_request()
-        if err is not None:
-            err_body, err_status = err
-            response = jsonify(err_body)
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            return response, err_status
-
-        resp_body, resp_status = _process_image_bytes(img_bytes, request.remote_addr)
-        response = jsonify(resp_body)
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        return response, resp_status
-
-
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return img_bytes, None
 
 
 @app.route('/api/sessions/<session_id>/metrics', methods=['POST', 'OPTIONS'])
@@ -261,6 +171,55 @@ def post_session_metrics(session_id):
         response = jsonify({'error': 'Internal server error', 'details': str(e)})
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
+
+
+def _process_image_bytes(img_bytes, remote_addr=None):
+    """Process raw image bytes with MediaPipe face_mesh and return a JSON-serializable result plus HTTP status.
+    This is a lightweight best-effort processor used by the /detect endpoints.
+    """
+    try:
+        image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+    except Exception as e:
+        app.logger.error(f'Failed to open image: {e}')
+        return {'error': 'Invalid image data'}, 400
+
+    try:
+        img_np = np.array(image)
+        # MediaPipe expects RGB image
+        results = face_mesh.process(img_np)
+    except Exception as e:
+        app.logger.error(f'Error running MediaPipe face mesh: {e}', exc_info=True)
+        return {'error': 'Face processing failed'}, 500
+
+    out = {'faces': 0, 'landmarks': [], 'face_area_percent': None}
+    if not results or not getattr(results, 'multi_face_landmarks', None):
+        return out, 200
+
+    faces = results.multi_face_landmarks
+    out['faces'] = len(faces)
+    # Only return first face landmarks to keep payload small
+    first = faces[0]
+    lms = []
+    xs = []
+    ys = []
+    for lm in first.landmark:
+        lms.append({'x': lm.x, 'y': lm.y, 'z': lm.z})
+        xs.append(lm.x)
+        ys.append(lm.y)
+
+    out['landmarks'] = lms
+
+    try:
+        minx = min(xs)
+        maxx = max(xs)
+        miny = min(ys)
+        maxy = max(ys)
+        area = max(0.0, (maxx - minx) * (maxy - miny) * 100.0)
+        out['face_area_percent'] = area
+    except Exception:
+        out['face_area_percent'] = None
+
+    return out, 200
 
 
 # Session management
@@ -447,7 +406,7 @@ def detect_with_session(session_id):
             response = jsonify({'error': 'Session not found or expired'})
             response.headers.add('Access-Control-Allow-Origin', '*')
             return response, 404
-        
+
         # Extract image bytes from request
         img_bytes, err = _extract_image_bytes_from_request()
         if err is not None:
@@ -499,6 +458,142 @@ def detect_with_session(session_id):
         })
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
+
+
+@app.route('/api/sessions/<session_id>/report', methods=['GET'])
+def session_report(session_id):
+    """Generate a simple heuristic report for a session by aggregating stored metrics.
+    This is a prototype heuristic and not medical advice.
+    """
+    try:
+        # Resolve collections (support optional Mongo config)
+        sc = sessions_collection if sessions_collection is not None else (mongo_db.get_collection('sessions') if mongo_db is not None else None)
+        mc = metrics_collection if metrics_collection is not None else (mongo_db.get_collection('metrics') if mongo_db is not None else None)
+
+        session_doc = None
+        try:
+            if sc is not None:
+                session_doc = sc.find_one({'$or': [{'_id': session_id}, {'sessionId': session_id}]})
+        except Exception:
+            session_doc = None
+
+        metrics_cursor = []
+        try:
+            if mc is not None:
+                metrics_cursor = list(mc.find({'$or': [{'sessionId': session_id}, {'session_id': session_id}, {'_id': session_id}]}).sort('timestamp', 1))
+        except Exception as e:
+            app.logger.error(f'Error fetching metrics for report: {e}', exc_info=True)
+            metrics_cursor = []
+
+        if not metrics_cursor and session_doc is None:
+            return jsonify({'error': 'No metrics or session found', 'session_id': session_id}), 404
+
+        # Helpers
+        def safe_get(doc, path, default=None):
+            try:
+                cur = doc
+                for p in path.split('.'):
+                    if isinstance(cur, dict):
+                        cur = cur.get(p, default)
+                    else:
+                        return default
+                return cur
+            except Exception:
+                return default
+
+        def avg(xs):
+            return sum(xs) / len(xs) if xs else None
+
+        attention = []
+        drowsiness = []
+        blink_rate = []
+        face_area = []
+        ear = []
+        timestamps = []
+
+        for m in metrics_cursor:
+            timestamps.append(str(m.get('timestamp')))
+            a = safe_get(m, 'metrics.attentionPercent') or safe_get(m, 'attentionPercent')
+            d = safe_get(m, 'metrics.drowsinessPercent') or safe_get(m, 'drowsinessPercent')
+            br = safe_get(m, 'metrics.blinkRate') or safe_get(m, 'blinkRate')
+            fa = safe_get(m, 'metrics.faceAreaPercent') or safe_get(m, 'faceAreaPercent')
+            e = safe_get(m, 'metrics.ear') or safe_get(m, 'ear')
+            try:
+                if a is not None:
+                    attention.append(float(a))
+            except Exception:
+                pass
+            try:
+                if d is not None:
+                    drowsiness.append(float(d))
+            except Exception:
+                pass
+            try:
+                if br is not None:
+                    blink_rate.append(float(br))
+            except Exception:
+                pass
+            try:
+                if fa is not None:
+                    face_area.append(float(fa))
+            except Exception:
+                pass
+            try:
+                if e is not None:
+                    ear.append(float(e))
+            except Exception:
+                pass
+
+        report = {
+            'session_id': session_id,
+            'metrics_count': len(metrics_cursor),
+            'summary': {
+                'avg_attention': avg(attention),
+                'avg_drowsiness': avg(drowsiness),
+                'avg_blink_rate': avg(blink_rate),
+                'avg_face_area': avg(face_area),
+                'avg_ear': avg(ear),
+            },
+            'flags': [],
+            'recommendations': [],
+            'raw': {
+                'timestamps': timestamps,
+                'attention': attention,
+                'drowsiness': drowsiness,
+                'blink_rate': blink_rate,
+                'face_area': face_area,
+                'ear': ear,
+            }
+        }
+
+        # Heuristics
+        try:
+            if report['summary']['avg_drowsiness'] is not None and report['summary']['avg_drowsiness'] >= 60.0:
+                report['flags'].append({'code': 'high_drowsiness', 'message': 'Elevated drowsiness detected'})
+            if report['summary']['avg_attention'] is not None and report['summary']['avg_attention'] < 40.0:
+                report['flags'].append({'code': 'low_attention', 'message': 'Low attention/engagement detected'})
+            if report['summary']['avg_blink_rate'] is not None and (report['summary']['avg_blink_rate'] > 40.0 or report['summary']['avg_blink_rate'] < 2.0):
+                report['flags'].append({'code': 'abnormal_blink_rate', 'message': 'Abnormal blink rate observed'})
+            if report['summary']['avg_face_area'] is not None and report['summary']['avg_face_area'] < 5.0:
+                report['flags'].append({'code': 'small_face_area', 'message': 'Face small in frame (poor visibility) — results may be unreliable'})
+            if report['summary']['avg_ear'] is not None and report['summary']['avg_ear'] < 0.12:
+                report['flags'].append({'code': 'very_low_ear', 'message': 'Eyes frequently closed or nearly closed'})
+        except Exception:
+            pass
+
+        if any(f['code'] == 'high_drowsiness' for f in report['flags']):
+            report['recommendations'].append('Suggest a break and a short rest; avoid driving or operating machinery.')
+        if any(f['code'] == 'low_attention' for f in report['flags']):
+            report['recommendations'].append('Encourage focused tasks, reduce distractions, or repeat the test under quieter conditions.')
+        if any(f['code'] == 'abnormal_blink_rate' for f in report['flags']):
+            report['recommendations'].append('Consider evaluating for dry eyes, fatigue, or medication side-effects.')
+        if not report['flags']:
+            report['recommendations'].append('No immediate concerns detected by heuristic analysis.')
+
+        return jsonify(report), 200
+    except Exception as e:
+        app.logger.error(f'Error generating session report: {e}', exc_info=True)
+        return jsonify({'error': 'Failed to generate report', 'details': str(e)}), 500
 
 @app.route('/api/sessions/<session_id>', methods=['GET', 'OPTIONS'])
 def get_session(session_id):
