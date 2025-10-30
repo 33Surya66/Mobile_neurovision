@@ -231,10 +231,24 @@ class MetricsService {
       'blinkCount': m.blinkCount,
       'timestamp': DateTime.now().toIso8601String(),
     };
-
-    // Fire-and-forget; ApiService handles session checks
-    ApiService.postMetrics(payload).then((ok) {}).catchError((_) {});
+    // Debounce/batch metrics to avoid flooding the backend (send at most once
+    // per [_debounceDuration]). Store the latest payload and schedule a send.
+    _pendingMetricsPayload = payload;
+    if (_debounceTimer == null || !_debounceTimer!.isActive) {
+      _debounceTimer = Timer(_debounceDuration, () async {
+        final toSend = _pendingMetricsPayload;
+        _pendingMetricsPayload = null;
+        try {
+          await ApiService.postMetrics(toSend ?? {});
+        } catch (_) {}
+      });
+    }
   }
+
+  // Debounce helpers
+  static Timer? _debounceTimer;
+  static Map<String, dynamic>? _pendingMetricsPayload;
+  static const Duration _debounceDuration = Duration(seconds: 1);
 
   static double _calculateDrowsiness(double ear) {
     // Simple drowsiness calculation (inverse of attention)

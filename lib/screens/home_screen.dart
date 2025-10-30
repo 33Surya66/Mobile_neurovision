@@ -7,6 +7,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/session_manager.dart';
+import '../services/api_service.dart';
+import 'report_page.dart';
 
 // Conditional imports for web
 import '../utils/js_util_stub.dart' if (dart.library.html) '../utils/js_util_web.dart' as js_util;
@@ -43,6 +45,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _overlayTimer;
   Timer? _serverTimer;
   bool _useBackend = true; // when true, APK will upload periodic JPEGs to backend
+  String? _lastEndedSessionId;
+  bool _showGenerateReport = false;
   // Metric state removed (metrics UI is hidden). Detection/overlay still active.
 
   @override
@@ -238,10 +242,23 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       
       // End the current session
-      if (_sessionManager.isActive) {
+        if (_sessionManager.isActive) {
         // Save all detection results before ending session
         await _saveDetectionResults();
+        // capture the session id before ending so we can generate a report
+        final sid = _sessionManager.currentSessionId;
         await _sessionManager.endSession();
+        // Ensure UI updates by using setState when changing visible state
+        if (mounted) {
+          setState(() {
+            _lastEndedSessionId = sid;
+            _showGenerateReport = true;
+          });
+        } else {
+          // Fallback assignment if widget already disposed
+          _lastEndedSessionId = sid;
+          _showGenerateReport = true;
+        }
       }
     } catch (e) {
       debugPrint('Error stopping recording session: $e');
@@ -251,17 +268,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Metric chips removed — metrics UI is hidden.
 
-  Widget _buildRecordButton() {
-    return ElevatedButton.icon(
-      onPressed: _isRecording ? _stopRecordingSession : _startRecordingSession,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: _isRecording ? Colors.red : Colors.green,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      ),
-      icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
-      label: Text(_isRecording ? 'STOP' : 'RECORD'),
-    );
-  }
+  // Simplified UI: use a single primary record button (see bottom controls).
+  // The previous compact icon button was removed to reduce redundancy.
 
   Future<void> _saveDetectionResults() async {
     if (_detectionResults.isEmpty) return;
@@ -595,17 +603,38 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Row(
               children: [
-                _buildRecordButton(),
-                const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
                     onPressed: _onRecordPressed,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
-                    child: Text(_streaming ? 'Stop Recording' : 'Record', style: const TextStyle(fontSize: 16)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _isRecording ? Colors.red : Colors.green,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(_isRecording ? 'STOP' : 'RECORD', style: const TextStyle(fontSize: 16)),
                   ),
                 ),
               ],
             ),
+            if (_showGenerateReport && _lastEndedSessionId != null) ...[
+              const SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: () async {
+                  // fetch report and navigate
+                  try {
+                    final report = await ApiService.getSessionReport(_lastEndedSessionId!);
+                    if (mounted) {
+                      // navigate to report page
+                      Navigator.of(context).push(MaterialPageRoute(builder: (_) => ReportPage(report: report)));
+                      setState(() { _showGenerateReport = false; });
+                    }
+                  } catch (e) {
+                    setState(() { _status = 'Failed to generate report: $e'; });
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Generate Session Report', style: TextStyle(fontSize: 16)),
+              ),
+            ],
             const SizedBox(height: 12),
             const Divider(color: Colors.white12),
             const SizedBox(height: 8),

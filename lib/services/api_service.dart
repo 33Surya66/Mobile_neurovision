@@ -215,6 +215,25 @@ class ApiService {
     }
   }
 
+  // Get session report (aggregated heuristic report)
+  static Future<Map<String, dynamic>> getSessionReport(String sessionId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/sessions/$sessionId/report'),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception('Failed to get session report: ${response.statusCode} ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('Error getting session report: $e');
+      rethrow;
+    }
+  }
+
   // Post metrics for the current session
   static Future<bool> postMetrics(Map<String, dynamic> metrics) async {
     if (_sessionId == null) return false;
