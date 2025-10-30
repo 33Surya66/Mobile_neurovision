@@ -1,4 +1,6 @@
 flask==2.2.5
+waitress==2.1.2
+requests>=2.31.0
 pillow>=9.5.0,<10.0.0
 # Use a currently available mediapipe wheel
 mediapipe==0.10.21
@@ -9,3 +11,5 @@ flask-cors==4.0.0
 python-dotenv==1.0.1
 dnspython==2.5.0
 waitress==2.1.2
+requests>=2.31.0
+google-genai>=0.15.0

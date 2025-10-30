@@ -9,6 +9,12 @@ from datetime import datetime, timezone
 import sys
 from bson import ObjectId
 import uuid
+import requests
+try:
+    # Prefer the official Google GenAI client when available (user-provided snippet)
+    from google import genai  # type: ignore
+except Exception:
+    genai = None
 try:
     # load .env in development if present
     from dotenv import load_dotenv
@@ -589,6 +595,102 @@ def session_report(session_id):
             report['recommendations'].append('Consider evaluating for dry eyes, fatigue, or medication side-effects.')
         if not report['flags']:
             report['recommendations'].append('No immediate concerns detected by heuristic analysis.')
+
+        # If Gemini/LLM is configured, send the metrics as a prompt for an assistant analysis.
+        gemini_key = os.environ.get('GEMINI_API_KEY')
+        gemini_url = os.environ.get('GEMINI_URL')
+        gemini_timeout = float(os.environ.get('GEMINI_TIMEOUT', '6.0'))
+        gemini_model = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
+
+        # Build a concise prompt
+        prompt_lines = [
+            "You are a clinical reasoning assistant. Analyze the following session metrics and provide:",
+            "1) A short plain-language assessment mentioning if there are possible neurological symptoms (tentative, non-diagnostic).",
+            "2) If no neurological concerns, provide a brief generic well-being summary and suggestions.",
+            "3) A short list of recommended next steps or follow-ups (non-medical, non-diagnostic guidance).",
+            "\nSession metrics:\n"
+        ]
+        summary = report.get('summary', {})
+        prompt_lines.append(f"metrics_count: {report.get('metrics_count')}")
+        for k, v in summary.items():
+            prompt_lines.append(f"{k}: {v}")
+        prompt_lines.append("\nRecent values (first/last up to 10):")
+        raw = report.get('raw', {})
+        for key in ['attention', 'drowsiness', 'blink_rate', 'face_area', 'ear']:
+            vals = raw.get(key, [])
+            if vals:
+                sample = vals[:5]
+                prompt_lines.append(f"{key}: {sample} (total {len(vals)})")
+
+        prompt_text = "\n".join(prompt_lines)
+
+        # Prefer the official google.genai client when available and GEMINI_API_KEY present
+        if genai is not None and gemini_key:
+            try:
+                try:
+                    client = genai.Client()
+                    # Use the models.generate_content API if present (user-provided sample)
+                    # Some versions expose client.models.generate_content, others may differ.
+                    gen_resp = None
+                    try:
+                        gen_resp = client.models.generate_content(model=gemini_model, contents=prompt_text)
+                    except Exception:
+                        # Fallback to a more generic call shape
+                        gen_resp = client.generate(model=gemini_model, input=prompt_text)
+
+                    # Extract text
+                    ai_text = None
+                    if gen_resp is not None:
+                        if hasattr(gen_resp, 'text'):
+                            ai_text = gen_resp.text
+                        else:
+                            try:
+                                jr = gen_resp if isinstance(gen_resp, dict) else gen_resp.__dict__
+                                ai_text = jr.get('output') or jr.get('text') or jr.get('result') or str(jr)
+                            except Exception:
+                                ai_text = str(gen_resp)
+
+                    report['ai_analysis'] = ai_text
+                except Exception as e:
+                    app.logger.error(f'Error calling google.genai client: {e}', exc_info=True)
+                    report['ai_analysis_error'] = {'error': str(e)}
+            except Exception as e:
+                app.logger.error(f'Unexpected error using genai: {e}', exc_info=True)
+                report['ai_analysis_error'] = {'error': str(e)}
+
+        # If genai client not available but GEMINI_URL is provided, fall back to HTTP
+        elif gemini_key and gemini_url:
+            try:
+                headers = {
+                    'Authorization': f'Bearer {gemini_key}',
+                    'Content-Type': 'application/json'
+                }
+                payload = {'input': prompt_text, 'max_output_tokens': 512}
+                resp = requests.post(gemini_url, headers=headers, json=payload, timeout=gemini_timeout)
+                if resp.status_code == 200:
+                    try:
+                        jr = resp.json()
+                        ai_text = None
+                        if isinstance(jr, dict):
+                            ai_text = jr.get('output') or jr.get('text') or jr.get('result') or jr.get('choices')
+                            if isinstance(ai_text, list) and ai_text:
+                                ai_text = ' '.join([str(x) for x in ai_text])
+                            elif isinstance(ai_text, dict):
+                                ai_text = ai_text.get('text') or str(ai_text)
+                        if ai_text is None:
+                            ai_text = resp.text
+                        report['ai_analysis'] = ai_text
+                    except Exception:
+                        report['ai_analysis'] = resp.text
+                else:
+                    app.logger.warning(f'Gemini request failed: {resp.status_code} {resp.text}')
+                    report['ai_analysis_error'] = {'status': resp.status_code, 'text': resp.text}
+            except Exception as e:
+                app.logger.error(f'Error calling Gemini via HTTP: {e}', exc_info=True)
+                report['ai_analysis_error'] = {'error': str(e)}
+        else:
+            # No gemini config detected, skip AI analysis
+            pass
 
         return jsonify(report), 200
     except Exception as e:
