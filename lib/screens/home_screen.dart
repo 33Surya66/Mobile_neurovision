@@ -20,6 +20,7 @@ import 'image_detection_page.dart';
 import '../services/face_detection_service.dart';
 import 'dashboard_page.dart';
 import 'settings_page.dart';
+import 'session_history_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -655,6 +656,22 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icon(Icons.dashboard, color: Colors.white54),
                         SizedBox(height: 6),
                         Text('Dashboard', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Session History navigation
+                InkWell(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SessionHistoryScreen())),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 8.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.history, color: Colors.white54),
+                        SizedBox(height: 6),
+                        Text('Sessions', style: TextStyle(color: Colors.white54, fontSize: 12)),
                       ],
                     ),
                   ),

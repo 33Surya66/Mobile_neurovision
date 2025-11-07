@@ -8,6 +8,27 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+class ApiResponse {
+  final bool success;
+  final dynamic data;
+  final String? error;
+  final int? statusCode;
+
+  const ApiResponse({
+    required this.success,
+    this.data,
+    this.error,
+    this.statusCode,
+  });
+
+  const ApiResponse.fromJson(Map<String, dynamic> json) : this(
+    success: json['success'] ?? false,
+    data: json['data'],
+    error: json['error'],
+    statusCode: json['statusCode'],
+  );
+}
+
 class ApiService {
   static const String _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
@@ -39,9 +60,183 @@ class ApiService {
   };
 
   // Session Management
-  static Future<Map<String, dynamic>> startSession({Map<String, dynamic>? metadata}) async {
+  static Future<ApiResponse> getSessions() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/sessions'),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        return ApiResponse(
+          success: true,
+          data: jsonDecode(response.body),
+          statusCode: response.statusCode,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to fetch sessions',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  static Future<ApiResponse> getSession(String sessionId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/sessions/$sessionId'),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        return ApiResponse(
+          success: true,
+          data: jsonDecode(response.body),
+          statusCode: response.statusCode,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to fetch session',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  static Future<ApiResponse> createSession(Map<String, dynamic> sessionData) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/sessions'),
+        headers: _headers,
+        body: jsonEncode(sessionData),
+      );
+
+      if (response.statusCode == 201) {
+        return ApiResponse(
+          success: true,
+          data: jsonDecode(response.body),
+          statusCode: response.statusCode,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to create session',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  static Future<ApiResponse> updateSession(String sessionId, Map<String, dynamic> updates) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$_baseUrl/sessions/$sessionId'),
+        headers: _headers,
+        body: jsonEncode(updates),
+      );
+
+      if (response.statusCode == 200) {
+        return ApiResponse(
+          success: true,
+          data: jsonDecode(response.body),
+          statusCode: response.statusCode,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to update session',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  static Future<ApiResponse> deleteSession(String sessionId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$_baseUrl/sessions/$sessionId'),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return const ApiResponse(
+          success: true,
+          statusCode: 200,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to delete session',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  // Session Analytics
+  static Future<ApiResponse> getSessionStats() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/sessions/stats'),
+        headers: _headers,
+      );
+
+      if (response.statusCode == 200) {
+        return ApiResponse(
+          success: true,
+          data: jsonDecode(response.body),
+          statusCode: response.statusCode,
+        );
+      } else {
+        return ApiResponse(
+          success: false,
+          error: 'Failed to fetch session stats',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
+    }
+  }
+
+  // Session Management
+  static Future<ApiResponse> startSession({Map<String, dynamic>? metadata}) async {
     if (_sessionId != null) {
-      return {'session_id': _sessionId, 'status': 'existing_session'};
+      return ApiResponse(
+        success: true,
+        data: {'session_id': _sessionId, 'status': 'existing_session'},
+      );
     }
     
     // Generate a unique device ID if not exists
@@ -68,19 +263,33 @@ class ApiService {
         final data = jsonDecode(response.body);
         _sessionId = data['session_id'];
         debugPrint('Started session: $_sessionId');
-        return data;
+        return ApiResponse(
+          success: true,
+          data: data,
+          statusCode: response.statusCode,
+        );
       } else {
-        throw Exception('Failed to start session (${response.statusCode}): ${response.body}');
+        return ApiResponse(
+        success: false,
+        error: 'Failed to start session (${response.statusCode}): ${response.body}',
+        statusCode: response.statusCode,
+      );
       }
     } catch (e) {
       debugPrint('Error starting session: $e');
-      rethrow;
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
     }
   }
 
-  static Future<Map<String, dynamic>> endSession() async {
+  static Future<ApiResponse> endSession() async {
     if (_sessionId == null) {
-      return {'status': 'no_active_session'};
+      return const ApiResponse(
+        success: true,
+        data: {'status': 'no_active_session'},
+      );
     }
     
     try {
@@ -93,13 +302,24 @@ class ApiService {
         final data = jsonDecode(response.body);
         debugPrint('Ended session: $_sessionId');
         _sessionId = null;
-        return data;
+        return ApiResponse(
+          success: true,
+          data: data,
+          statusCode: response.statusCode,
+        );
       } else {
-        throw Exception('Failed to end session (${response.statusCode}): ${response.body}');
+        return ApiResponse(
+        success: false,
+        error: 'Failed to end session (${response.statusCode}): ${response.body}',
+        statusCode: response.statusCode,
+      );
       }
     } catch (e) {
       debugPrint('Error ending session: $e');
-      rethrow;
+      return ApiResponse(
+        success: false,
+        error: e.toString(),
+      );
     }
   }
 

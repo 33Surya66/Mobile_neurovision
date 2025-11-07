@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:mobile_neurovision/services/session_manager.dart';
 import 'screens/landing_page.dart';
 
 // App color constants
@@ -10,6 +11,13 @@ const _accentCyan = Color(0xFF06B6D4);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize session manager with a default API key
+  // In a production app, you might want to load this from a config file or environment variable
+  SessionManager().initialize(
+    apiKey: 'your_api_key_here', // Replace with your actual API key
+  );
+  
   runApp(const NeuroVisionApp());
 }
 
